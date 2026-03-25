@@ -577,7 +577,15 @@ def init_command(
             embedder_impl = MockEmbedder()
     else:
         embedder_impl = MockEmbedder()
-    vector_store = InMemoryVectorStore(embedder_impl)
+    # Try LanceDB for persistent vector storage, fall back to in-memory
+    lance_dir = repo_path / ".wikicode" / "lancedb"
+    try:
+        from wikicode.core.persistence.vector_store import LanceDBVectorStore
+
+        lance_dir.mkdir(parents=True, exist_ok=True)
+        vector_store = LanceDBVectorStore(str(lance_dir), embedder=embedder_impl)
+    except ImportError:
+        vector_store = InMemoryVectorStore(embedder_impl)
 
     generator = PageGenerator(provider, assembler, config, vector_store=vector_store)
 

@@ -1,4 +1,4 @@
-"""WikiCode MCP Server — 16 tools for AI coding assistants.
+"""WikiCode MCP Server — 8 tools for AI coding assistants.
 
 Exposes the full WikiCode wiki as queryable tools via the MCP protocol.
 Supports both stdio transport (Claude Code, Cursor, Cline) and SSE transport
@@ -11,8 +11,10 @@ Usage:
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
+import os.path
 from contextlib import asynccontextmanager
 from typing import Any
 
@@ -166,8 +168,9 @@ mcp = FastMCP(
     "WikiCode",
     instructions=(
         "WikiCode is a codebase documentation engine. Use these tools to query "
-        "the wiki for architecture overviews, file docs, symbol lookups, "
-        "dependency paths, git history, hotspots, ownership, and dead code."
+        "the wiki for architecture overviews, contextual docs on files/modules/"
+        "symbols, modification risk assessment, architectural decision rationale, "
+        "semantic search, dependency paths, dead code, and architecture diagrams."
     ),
     lifespan=_lifespan,
 )
@@ -176,6 +179,11 @@ mcp = FastMCP(
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+_CODE_EXTS = frozenset({
+    ".py", ".ts", ".js", ".go", ".rs", ".java", ".tsx", ".jsx",
+    ".rb", ".kt", ".cpp", ".c", ".h", ".cs", ".swift", ".scala",
+})
 
 
 async def _get_repo(session: AsyncSession, repo: str | None = None) -> Repository:
@@ -211,8 +219,16 @@ async def _get_repo(session: AsyncSession, repo: str | None = None) -> Repositor
     return obj
 
 
+def _is_path(query: str) -> bool:
+    """Heuristic: does this string look like a file or module path?"""
+    if "/" in query:
+        return True
+    _, ext = os.path.splitext(query)
+    return ext in _CODE_EXTS
+
+
 # ---------------------------------------------------------------------------
-# Tool 1: get_overview
+# Tool 1: get_overview (unchanged)
 # ---------------------------------------------------------------------------
 
 
@@ -283,213 +299,646 @@ async def get_overview(repo: str | None = None) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Tool 2: get_module_docs
+# Tool 2: get_context (NEW — replaces 5 tools)
 # ---------------------------------------------------------------------------
 
 
-@mcp.tool()
-async def get_module_docs(module_path: str, repo: str | None = None) -> dict:
-    """Get the wiki page for a module/package/directory.
+async def _resolve_one_target(
+    session: AsyncSession,
+    repository: Repository,
+    target: str,
+    include: set[str] | None,
+) -> dict:
+    """Resolve a single target and return its full context."""
+    repo_id = repository.id
+    result_data: dict[str, Any] = {}
 
-    Args:
-        module_path: Module path (e.g. "src/auth", "packages/core").
-        repo: Repository path, name, or ID.
-    """
-    async with get_session(_session_factory) as session:
-        repository = await _get_repo(session, repo)
+    # --- Determine target type ---
+    # 1. Try file page (most common)
+    page_id = f"file_page:{target}"
+    page = await session.get(Page, page_id)
+    target_type = None
+    file_path_for_git: str | None = None
 
-        # Look up module page by target_path match
-        result = await session.execute(
+    if page and page.repository_id == repo_id:
+        target_type = "file"
+        file_path_for_git = target
+    else:
+        # 2. Try module page
+        res = await session.execute(
             select(Page).where(
-                Page.repository_id == repository.id,
+                Page.repository_id == repo_id,
                 Page.page_type == "module_page",
-                Page.target_path == module_path,
+                Page.target_path == target,
             )
         )
-        page = result.scalar_one_or_none()
-
-        # Fallback: try partial match
+        page = res.scalar_one_or_none()
         if page is None:
-            result = await session.execute(
+            # Partial match fallback for modules
+            res = await session.execute(
                 select(Page).where(
-                    Page.repository_id == repository.id,
+                    Page.repository_id == repo_id,
                     Page.page_type == "module_page",
-                    Page.target_path.contains(module_path),
+                    Page.target_path.contains(target),
                 )
             )
-            page = result.scalar_one_or_none()
-
-        if page is None:
-            return {"error": f"Module page not found for '{module_path}'"}
-
-        # Get file pages within this module
-        result = await session.execute(
-            select(Page).where(
-                Page.repository_id == repository.id,
-                Page.page_type == "file_page",
-                Page.target_path.like(f"{module_path}%"),
+            page = res.scalar_one_or_none()
+        if page:
+            target_type = "module"
+        else:
+            # 3. Try symbol (exact then fuzzy)
+            res = await session.execute(
+                select(WikiSymbol).where(
+                    WikiSymbol.repository_id == repo_id,
+                    WikiSymbol.name == target,
+                )
             )
-        )
-        file_pages = result.scalars().all()
+            sym_matches = list(res.scalars().all())
+            if not sym_matches:
+                res = await session.execute(
+                    select(WikiSymbol).where(
+                        WikiSymbol.repository_id == repo_id,
+                        WikiSymbol.name.ilike(f"%{target}%"),
+                    ).limit(10)
+                )
+                sym_matches = list(res.scalars().all())
+            if sym_matches:
+                target_type = "symbol"
+                file_path_for_git = sym_matches[0].file_path
+            else:
+                # 4. Try file page by target_path search
+                res = await session.execute(
+                    select(Page).where(
+                        Page.repository_id == repo_id,
+                        Page.page_type == "file_page",
+                        Page.target_path == target,
+                    )
+                )
+                page = res.scalar_one_or_none()
+                if page:
+                    target_type = "file"
+                    file_path_for_git = target
 
-        return {
-            "title": page.title,
-            "content_md": page.content,
-            "files": [
+    if target_type is None:
+        return {"target": target, "error": f"Target not found: '{target}'"}
+
+    result_data["target"] = target
+    result_data["type"] = target_type
+
+    # --- Docs ---
+    if include is None or "docs" in include:
+        docs: dict[str, Any] = {}
+        if target_type == "file":
+            docs["title"] = page.title
+            docs["content_md"] = page.content
+            # Symbols in this file
+            res = await session.execute(
+                select(WikiSymbol).where(
+                    WikiSymbol.repository_id == repo_id,
+                    WikiSymbol.file_path == target,
+                )
+            )
+            symbols = res.scalars().all()
+            docs["symbols"] = [
+                {"name": s.name, "kind": s.kind, "signature": s.signature}
+                for s in symbols
+            ]
+            # Importers
+            res = await session.execute(
+                select(GraphEdge).where(
+                    GraphEdge.repository_id == repo_id,
+                    GraphEdge.target_node_id == target,
+                )
+            )
+            importers = res.scalars().all()
+            docs["imported_by"] = [e.source_node_id for e in importers]
+
+        elif target_type == "module":
+            docs["title"] = page.title
+            docs["content_md"] = page.content
+            # Child file pages
+            res = await session.execute(
+                select(Page).where(
+                    Page.repository_id == repo_id,
+                    Page.page_type == "file_page",
+                    Page.target_path.like(f"{page.target_path}%"),
+                )
+            )
+            file_pages = res.scalars().all()
+            docs["files"] = [
                 {
                     "path": f.target_path,
                     "description": f.title,
                     "confidence_score": f.confidence,
                 }
                 for f in file_pages
-            ],
-            "public_api_summary": page.content[:500] if page.content else "",
-        }
+            ]
 
-
-# ---------------------------------------------------------------------------
-# Tool 3: get_file_docs
-# ---------------------------------------------------------------------------
-
-
-@mcp.tool()
-async def get_file_docs(file_path: str, repo: str | None = None) -> dict:
-    """Get the wiki page for a specific file.
-
-    Args:
-        file_path: Relative file path (e.g. "src/auth/service.py").
-        repo: Repository path, name, or ID.
-    """
-    async with get_session(_session_factory) as session:
-        repository = await _get_repo(session, repo)
-
-        page_id = f"file_page:{file_path}"
-        page = await session.get(Page, page_id)
-
-        if page is None:
-            # Try searching by target_path
-            result = await session.execute(
-                select(Page).where(
-                    Page.repository_id == repository.id,
-                    Page.page_type == "file_page",
-                    Page.target_path == file_path,
+        elif target_type == "symbol":
+            sym = sym_matches[0]  # type: ignore[possibly-undefined]
+            docs["name"] = sym.name
+            docs["qualified_name"] = sym.qualified_name
+            docs["kind"] = sym.kind
+            docs["signature"] = sym.signature
+            docs["file_path"] = sym.file_path
+            docs["docstring"] = sym.docstring or ""
+            # File page content as documentation
+            sym_page_id = f"file_page:{sym.file_path}"
+            sym_page = await session.get(Page, sym_page_id)
+            docs["documentation"] = sym_page.content if sym_page else ""
+            # Used by
+            res = await session.execute(
+                select(GraphEdge).where(
+                    GraphEdge.repository_id == repo_id,
+                    GraphEdge.target_node_id == sym.file_path,
                 )
             )
-            page = result.scalar_one_or_none()
+            edges = res.scalars().all()
+            docs["used_by"] = [e.source_node_id for e in edges][:20]
+            # Candidates
+            if len(sym_matches) > 1:  # type: ignore[possibly-undefined]
+                docs["candidates"] = [
+                    {"name": m.name, "kind": m.kind, "file_path": m.file_path}
+                    for m in sym_matches[1:5]  # type: ignore[possibly-undefined]
+                ]
 
-        if page is None:
-            return {"error": f"File page not found for '{file_path}'"}
+        result_data["docs"] = docs
 
-        # Get symbols in this file
-        result = await session.execute(
-            select(WikiSymbol).where(
-                WikiSymbol.repository_id == repository.id,
-                WikiSymbol.file_path == file_path,
+    # --- Ownership ---
+    if include is None or "ownership" in include:
+        ownership: dict[str, Any] = {}
+        git_path = file_path_for_git
+        if target_type == "module" and page:
+            git_path = page.target_path
+        if git_path:
+            res = await session.execute(
+                select(GitMetadata).where(
+                    GitMetadata.repository_id == repo_id,
+                    GitMetadata.file_path == git_path,
+                )
+            )
+            meta = res.scalar_one_or_none()
+            if meta:
+                ownership["primary_owner"] = meta.primary_owner_name
+                ownership["owner_pct"] = meta.primary_owner_commit_pct
+                ownership["contributor_count"] = len(json.loads(meta.top_authors_json))
+            else:
+                ownership["primary_owner"] = None
+                ownership["owner_pct"] = None
+                ownership["contributor_count"] = 0
+        else:
+            ownership["primary_owner"] = None
+            ownership["owner_pct"] = None
+            ownership["contributor_count"] = 0
+        result_data["ownership"] = ownership
+
+    # --- Last change ---
+    if include is None or "last_change" in include:
+        last_change: dict[str, Any] = {}
+        git_path = file_path_for_git
+        if target_type == "module" and page:
+            git_path = page.target_path
+        if git_path:
+            res = await session.execute(
+                select(GitMetadata).where(
+                    GitMetadata.repository_id == repo_id,
+                    GitMetadata.file_path == git_path,
+                )
+            )
+            meta = res.scalar_one_or_none()
+            if meta:
+                last_change["date"] = meta.last_commit_at.isoformat() if meta.last_commit_at else None
+                last_change["author"] = meta.primary_owner_name
+                last_change["days_ago"] = meta.age_days
+            else:
+                last_change["date"] = None
+                last_change["author"] = None
+                last_change["days_ago"] = None
+        else:
+            last_change["date"] = None
+            last_change["author"] = None
+            last_change["days_ago"] = None
+        result_data["last_change"] = last_change
+
+    # --- Decisions ---
+    if include is None or "decisions" in include:
+        res = await session.execute(
+            select(DecisionRecord).where(
+                DecisionRecord.repository_id == repo_id,
             )
         )
-        symbols = result.scalars().all()
+        all_decisions = res.scalars().all()
+        governing = []
+        for d in all_decisions:
+            affected_files = json.loads(d.affected_files_json)
+            affected_modules = json.loads(d.affected_modules_json)
+            if target in affected_files or target in affected_modules:
+                governing.append({
+                    "id": d.id,
+                    "title": d.title,
+                    "status": d.status,
+                    "decision": d.decision,
+                    "rationale": d.rationale,
+                    "confidence": d.confidence,
+                })
+            elif file_path_for_git and file_path_for_git in affected_files:
+                governing.append({
+                    "id": d.id,
+                    "title": d.title,
+                    "status": d.status,
+                    "decision": d.decision,
+                    "rationale": d.rationale,
+                    "confidence": d.confidence,
+                })
+        result_data["decisions"] = governing
 
-        # Get files that import this one (from graph edges)
-        result = await session.execute(
-            select(GraphEdge).where(
-                GraphEdge.repository_id == repository.id,
-                GraphEdge.target_node_id == file_path,
-            )
-        )
-        importers = result.scalars().all()
+    # --- Freshness ---
+    if include is None or "freshness" in include:
+        freshness: dict[str, Any] = {}
+        if page:
+            freshness["confidence_score"] = page.confidence
+            freshness["freshness_status"] = page.freshness_status
+            freshness["is_stale"] = (page.confidence or 1.0) < 0.6
+        elif target_type == "symbol" and file_path_for_git:
+            sym_page_id = f"file_page:{file_path_for_git}"
+            sym_page = await session.get(Page, sym_page_id)
+            if sym_page:
+                freshness["confidence_score"] = sym_page.confidence
+                freshness["freshness_status"] = sym_page.freshness_status
+                freshness["is_stale"] = (sym_page.confidence or 1.0) < 0.6
+            else:
+                freshness["confidence_score"] = None
+                freshness["freshness_status"] = None
+                freshness["is_stale"] = None
+        else:
+            freshness["confidence_score"] = None
+            freshness["freshness_status"] = None
+            freshness["is_stale"] = None
+        result_data["freshness"] = freshness
 
-        return {
-            "title": page.title,
-            "content_md": page.content,
-            "symbols": [
-                {"name": s.name, "kind": s.kind, "signature": s.signature}
-                for s in symbols
-            ],
-            "imported_by": [e.source_node_id for e in importers],
-            "confidence_score": page.confidence,
-            "freshness_status": page.freshness_status,
-        }
-
-
-# ---------------------------------------------------------------------------
-# Tool 4: get_symbol
-# ---------------------------------------------------------------------------
+    return result_data
 
 
 @mcp.tool()
-async def get_symbol(
-    symbol_name: str, kind: str | None = None, repo: str | None = None
+async def get_context(
+    targets: list[str],
+    include: list[str] | None = None,
+    repo: str | None = None,
 ) -> dict:
-    """Look up any symbol by name (fuzzy match if exact match fails).
+    """Get complete context for one or more targets (files, modules, or symbols).
+
+    Pass ALL relevant targets in a single call rather than calling this tool
+    multiple times. Each target is resolved automatically — pass file paths
+    like "src/auth/service.py", module paths like "src/auth", or symbol names
+    like "AuthService".
+
+    Example: get_context(["src/auth/service.py", "src/auth/middleware.py", "AuthService"])
+
+    Optional `include` parameter filters response fields:
+    ["docs", "ownership", "last_change", "decisions", "freshness"]
+    Default: all fields returned.
 
     Args:
-        symbol_name: Symbol name (e.g. "AuthService", "login", "UserRepository.find_by_id").
-        kind: Optional filter by kind (function, class, method, interface, enum, etc.).
+        targets: List of file paths, module paths, or symbol names to look up.
+        include: Optional list of fields to include. Default returns all.
+        repo: Repository path, name, or ID.
+    """
+    include_set = set(include) if include else None
+
+    async with get_session(_session_factory) as session:
+        repository = await _get_repo(session, repo)
+
+        results = await asyncio.gather(*[
+            _resolve_one_target(session, repository, t, include_set)
+            for t in targets
+        ])
+
+    return {
+        "targets": {r["target"]: r for r in results},
+    }
+
+
+# ---------------------------------------------------------------------------
+# Tool 3: get_risk (NEW — replaces 3 tools)
+# ---------------------------------------------------------------------------
+
+
+async def _assess_one_target(
+    session: AsyncSession,
+    repository: Repository,
+    target: str,
+    all_edge_map: dict[str, int],
+    import_links: dict[str, set[str]],
+) -> dict:
+    """Assess risk for a single target file."""
+    repo_id = repository.id
+    result_data: dict[str, Any] = {"target": target}
+
+    # Git metadata
+    res = await session.execute(
+        select(GitMetadata).where(
+            GitMetadata.repository_id == repo_id,
+            GitMetadata.file_path == target,
+        )
+    )
+    meta = res.scalar_one_or_none()
+
+    if meta is None:
+        result_data["hotspot_score"] = 0.0
+        result_data["dependents_count"] = all_edge_map.get(target, 0)
+        result_data["co_change_partners"] = []
+        result_data["primary_owner"] = None
+        result_data["owner_pct"] = None
+        result_data["risk_summary"] = f"{target} — no git metadata available"
+        return result_data
+
+    hotspot_score = meta.churn_percentile or 0.0
+    dep_count = all_edge_map.get(target, 0)
+
+    # Co-change partners
+    partners = json.loads(meta.co_change_partners_json)
+    import_related = import_links.get(target, set())
+    co_changes = [
+        {
+            "file_path": p.get("file_path", p.get("path", "")),
+            "count": p.get("co_change_count", p.get("count", 0)),
+            "has_import_link": p.get("file_path", p.get("path", "")) in import_related,
+        }
+        for p in partners
+    ]
+
+    owner = meta.primary_owner_name or "unknown"
+    pct = meta.primary_owner_commit_pct or 0.0
+
+    result_data["hotspot_score"] = hotspot_score
+    result_data["dependents_count"] = dep_count
+    result_data["co_change_partners"] = co_changes
+    result_data["primary_owner"] = owner
+    result_data["owner_pct"] = pct
+    result_data["risk_summary"] = (
+        f"{target} — hotspot score {hotspot_score:.0%}, {dep_count} dependents, "
+        f"{len(co_changes)} co-change partners, owned {pct:.0%} by {owner}"
+    )
+
+    return result_data
+
+
+@mcp.tool()
+async def get_risk(
+    targets: list[str],
+    repo: str | None = None,
+) -> dict:
+    """Assess modification risk for one or more files before making changes.
+
+    Pass ALL files you plan to modify in a single call. Returns hotspot
+    score, dependents, co-change partners, and a plain-English risk summary
+    for each target, plus the top 5 global hotspots for ambient awareness.
+
+    Example: get_risk(["src/auth/service.py", "src/auth/middleware.py"])
+
+    Args:
+        targets: List of file paths to assess.
         repo: Repository path, name, or ID.
     """
     async with get_session(_session_factory) as session:
         repository = await _get_repo(session, repo)
+        repo_id = repository.id
 
-        # Try exact match first
-        query = select(WikiSymbol).where(
-            WikiSymbol.repository_id == repository.id,
-            WikiSymbol.name == symbol_name,
-        )
-        if kind:
-            query = query.where(WikiSymbol.kind == kind)
-        result = await session.execute(query)
-        matches = list(result.scalars().all())
-
-        # Fallback to fuzzy match
-        if not matches:
-            query = select(WikiSymbol).where(
-                WikiSymbol.repository_id == repository.id,
-                WikiSymbol.name.ilike(f"%{symbol_name}%"),
-            )
-            if kind:
-                query = query.where(WikiSymbol.kind == kind)
-            result = await session.execute(query.limit(10))
-            matches = list(result.scalars().all())
-
-        if not matches:
-            return {"error": f"Symbol not found: '{symbol_name}'"}
-
-        sym = matches[0]
-
-        # Get the file page for this symbol's documentation
-        page_id = f"file_page:{sym.file_path}"
-        page = await session.get(Page, page_id)
-
-        # Get files that use this symbol
-        result = await session.execute(
+        # Pre-load edge counts (dependents = incoming edges)
+        res = await session.execute(
             select(GraphEdge).where(
-                GraphEdge.repository_id == repository.id,
-                GraphEdge.target_node_id == sym.file_path,
+                GraphEdge.repository_id == repo_id,
             )
         )
-        edges = result.scalars().all()
-        used_by = [e.source_node_id for e in edges]
+        all_edges = res.scalars().all()
+        dep_counts: dict[str, int] = {}
+        import_links: dict[str, set[str]] = {}
+        for e in all_edges:
+            dep_counts[e.target_node_id] = dep_counts.get(e.target_node_id, 0) + 1
+            import_links.setdefault(e.source_node_id, set()).add(e.target_node_id)
+            import_links.setdefault(e.target_node_id, set()).add(e.source_node_id)
 
-        return {
-            "name": sym.name,
-            "qualified_name": sym.qualified_name,
-            "kind": sym.kind,
-            "signature": sym.signature,
-            "file_path": sym.file_path,
-            "documentation": page.content if page else sym.docstring or "",
-            "used_by": used_by[:20],
-            "confidence_score": page.confidence if page else None,
-            "candidates": [
-                {"name": m.name, "kind": m.kind, "file_path": m.file_path}
-                for m in matches[1:5]
-            ]
-            if len(matches) > 1
-            else [],
-        }
+        # Assess each target
+        results = await asyncio.gather(*[
+            _assess_one_target(session, repository, t, dep_counts, import_links)
+            for t in targets
+        ])
+
+        # Global hotspots (excluding requested targets)
+        target_set = set(targets)
+        res = await session.execute(
+            select(GitMetadata)
+            .where(
+                GitMetadata.repository_id == repo_id,
+                GitMetadata.is_hotspot == True,  # noqa: E712
+            )
+            .order_by(GitMetadata.churn_percentile.desc())
+            .limit(len(targets) + 5)
+        )
+        all_hotspots = res.scalars().all()
+        global_hotspots = [
+            {
+                "file_path": h.file_path,
+                "hotspot_score": h.churn_percentile,
+                "primary_owner": h.primary_owner_name,
+            }
+            for h in all_hotspots
+            if h.file_path not in target_set
+        ][:5]
+
+    return {
+        "targets": {r["target"]: r for r in results},
+        "global_hotspots": global_hotspots,
+    }
 
 
 # ---------------------------------------------------------------------------
-# Tool 5: search_codebase
+# Tool 4: get_why (refactored — 3 modes)
+# ---------------------------------------------------------------------------
+
+
+@mcp.tool()
+async def get_why(
+    query: str | None = None,
+    repo: str | None = None,
+) -> dict:
+    """Understand why code is built the way it is, using architectural decision records.
+
+    Three modes:
+    1. get_why("why is auth using JWT?") — semantic search over decisions
+    2. get_why("src/auth/service.py") — all decisions governing a specific file
+    3. get_why() — decision health dashboard: stale decisions, ungoverned hotspots
+
+    Always call this before making architectural changes.
+
+    Args:
+        query: Natural language question, file/module path, or omit for health dashboard.
+        repo: Repository path, name, or ID.
+    """
+    # --- Mode 1: No query → health dashboard ---
+    if not query:
+        from wikicode.core.persistence.crud import get_decision_health_summary
+
+        async with get_session(_session_factory) as session:
+            repository = await _get_repo(session, repo)
+            health = await get_decision_health_summary(session, repository.id)
+
+        stale = health["stale_decisions"]
+        proposed = health["proposed_awaiting_review"]
+        ungoverned = health["ungoverned_hotspots"]
+
+        return {
+            "mode": "health",
+            "summary": (
+                f"{health['summary'].get('active', 0)} active · "
+                f"{health['summary'].get('stale', 0)} stale · "
+                f"{len(proposed)} proposed · "
+                f"{len(ungoverned)} ungoverned hotspots"
+            ),
+            "counts": health["summary"],
+            "stale_decisions": [
+                {
+                    "id": d.id,
+                    "title": d.title,
+                    "staleness_score": d.staleness_score,
+                    "affected_files": json.loads(d.affected_files_json)[:5],
+                }
+                for d in stale[:10]
+            ],
+            "proposed_awaiting_review": [
+                {
+                    "id": d.id,
+                    "title": d.title,
+                    "source": d.source,
+                    "confidence": d.confidence,
+                }
+                for d in proposed[:10]
+            ],
+            "ungoverned_hotspots": ungoverned[:15],
+        }
+
+    # --- Mode 2: Path → decisions governing that path ---
+    if _is_path(query):
+        async with get_session(_session_factory) as session:
+            repository = await _get_repo(session, repo)
+            res = await session.execute(
+                select(DecisionRecord).where(
+                    DecisionRecord.repository_id == repository.id,
+                )
+            )
+            all_decisions = res.scalars().all()
+
+        governing = []
+        for d in all_decisions:
+            affected_files = json.loads(d.affected_files_json)
+            affected_modules = json.loads(d.affected_modules_json)
+            if query in affected_files or query in affected_modules:
+                governing.append({
+                    "id": d.id,
+                    "title": d.title,
+                    "status": d.status,
+                    "context": d.context,
+                    "decision": d.decision,
+                    "rationale": d.rationale,
+                    "alternatives": json.loads(d.alternatives_json),
+                    "consequences": json.loads(d.consequences_json),
+                    "affected_files": affected_files,
+                    "source": d.source,
+                    "confidence": d.confidence,
+                    "staleness_score": d.staleness_score,
+                })
+
+        return {
+            "mode": "path",
+            "path": query,
+            "decisions": governing,
+        }
+
+    # --- Mode 3: Natural language → search ---
+    from wikicode.core.persistence.crud import list_decisions as _list_decisions
+
+    async with get_session(_session_factory) as session:
+        repository = await _get_repo(session, repo)
+        all_decisions = await _list_decisions(
+            session, repository.id, include_proposed=True, limit=200
+        )
+
+    # Keyword scoring
+    query_lower = query.lower()
+    query_words = set(query_lower.split())
+    scored_decisions = []
+    for d in all_decisions:
+        text = f"{d.title} {d.decision} {d.rationale}".lower()
+        match_count = sum(1 for w in query_words if w in text)
+        if match_count > 0:
+            scored_decisions.append((match_count, d))
+    scored_decisions.sort(key=lambda t: t[0], reverse=True)
+    keyword_matches = [d for _, d in scored_decisions[:5]]
+
+    # Semantic search over decision vector store
+    decision_results = []
+    try:
+        decision_results = await _decision_store.search(query, limit=5)
+    except Exception:
+        pass
+
+    # Semantic search over documentation
+    doc_results = []
+    try:
+        doc_results = await _vector_store.search(query, limit=3)
+    except Exception:
+        try:
+            doc_results = await _fts.search(query, limit=3)
+        except Exception:
+            pass
+
+    # Merge keyword matches with semantic results (dedup by ID)
+    seen_ids: set[str] = set()
+    merged_decisions = []
+    for d in keyword_matches:
+        if d.id not in seen_ids:
+            seen_ids.add(d.id)
+            merged_decisions.append({
+                "id": d.id,
+                "title": d.title,
+                "status": d.status,
+                "decision": d.decision,
+                "rationale": d.rationale,
+                "consequences": json.loads(d.consequences_json),
+                "affected_files": json.loads(d.affected_files_json),
+                "source": d.source,
+                "confidence": d.confidence,
+            })
+
+    for r in decision_results:
+        if r.page_id not in seen_ids:
+            seen_ids.add(r.page_id)
+            merged_decisions.append({
+                "id": r.page_id,
+                "title": r.title,
+                "snippet": r.snippet,
+                "relevance_score": r.score,
+            })
+
+    return {
+        "mode": "search",
+        "query": query,
+        "decisions": merged_decisions[:8],
+        "related_documentation": [
+            {
+                "page_id": r.page_id,
+                "title": r.title,
+                "page_type": r.page_type,
+                "snippet": r.snippet,
+                "relevance_score": r.score,
+            }
+            for r in doc_results[:3]
+        ],
+    }
+
+
+# ---------------------------------------------------------------------------
+# Tool 5: search_codebase (unchanged)
 # ---------------------------------------------------------------------------
 
 
@@ -513,10 +962,16 @@ async def search_codebase(
         await _get_repo(session, repo)
 
     # Try semantic search first, fall back to fulltext
+    results = []
     try:
         results = await _vector_store.search(query, limit=limit)
     except Exception:
-        results = await _fts.search(query, limit=limit)
+        pass
+    if not results:
+        try:
+            results = await _fts.search(query, limit=limit)
+        except Exception:
+            pass
 
     output = []
     for r in results:
@@ -537,96 +992,7 @@ async def search_codebase(
 
 
 # ---------------------------------------------------------------------------
-# Tool 6: get_architecture_diagram
-# ---------------------------------------------------------------------------
-
-
-@mcp.tool()
-async def get_architecture_diagram(
-    scope: str = "repo",
-    path: str | None = None,
-    diagram_type: str = "auto",
-    repo: str | None = None,
-) -> dict:
-    """Get a Mermaid diagram for the codebase or a specific module.
-
-    Args:
-        scope: "repo", "module", or "file".
-        path: Module or file path (required for module/file scope).
-        diagram_type: "auto", "flowchart", "class", or "sequence".
-        repo: Repository path, name, or ID.
-    """
-    async with get_session(_session_factory) as session:
-        repository = await _get_repo(session, repo)
-
-        if scope == "repo":
-            # Return the architecture diagram page
-            result = await session.execute(
-                select(Page).where(
-                    Page.repository_id == repository.id,
-                    Page.page_type == "architecture_diagram",
-                )
-            )
-            page = result.scalar_one_or_none()
-            if page:
-                return {
-                    "diagram_type": diagram_type if diagram_type != "auto" else "flowchart",
-                    "mermaid_syntax": page.content,
-                    "description": page.title,
-                }
-
-        # For module/file scope or fallback, build diagram from graph
-        if path:
-            filter_prefix = path
-        else:
-            filter_prefix = ""
-
-        result = await session.execute(
-            select(GraphNode).where(
-                GraphNode.repository_id == repository.id,
-                GraphNode.node_id.like(f"{filter_prefix}%") if filter_prefix else GraphNode.repository_id == repository.id,
-            )
-        )
-        nodes = result.scalars().all()
-
-        result = await session.execute(
-            select(GraphEdge).where(
-                GraphEdge.repository_id == repository.id,
-            )
-        )
-        edges = result.scalars().all()
-
-        node_ids = {n.node_id for n in nodes}
-        relevant_edges = [
-            e for e in edges
-            if e.source_node_id in node_ids or e.target_node_id in node_ids
-        ]
-
-        # Build Mermaid flowchart
-        lines = ["graph TD"]
-        seen_nodes = set()
-        for e in relevant_edges[:50]:  # Limit to 50 edges for readability
-            src = e.source_node_id.replace("/", "_").replace(".", "_").replace("-", "_")
-            tgt = e.target_node_id.replace("/", "_").replace(".", "_").replace("-", "_")
-            if src not in seen_nodes:
-                lines.append(f'    {src}["{e.source_node_id}"]')
-                seen_nodes.add(src)
-            if tgt not in seen_nodes:
-                lines.append(f'    {tgt}["{e.target_node_id}"]')
-                seen_nodes.add(tgt)
-            lines.append(f"    {src} --> {tgt}")
-
-        mermaid = "\n".join(lines) if len(lines) > 1 else "graph TD\n    A[No graph data available]"
-
-        return {
-            "diagram_type": diagram_type if diagram_type != "auto" else "flowchart",
-            "mermaid_syntax": mermaid,
-            "description": f"Dependency graph for {scope}: {path or 'entire repo'}",
-        }
-
-
-# ---------------------------------------------------------------------------
-# Tool 7: get_dependency_path
+# Tool 6: get_dependency_path (unchanged)
 # ---------------------------------------------------------------------------
 
 
@@ -686,339 +1052,7 @@ async def get_dependency_path(
 
 
 # ---------------------------------------------------------------------------
-# Tool 8: get_stale_pages
-# ---------------------------------------------------------------------------
-
-
-@mcp.tool()
-async def get_stale_pages(
-    threshold: float = 0.6, repo: str | None = None
-) -> dict:
-    """List pages whose confidence has dropped below a threshold.
-
-    Useful for knowing which docs to distrust or prioritize for regeneration.
-
-    Args:
-        threshold: Confidence score threshold (default 0.6). Pages below this are returned.
-        repo: Repository path, name, or ID.
-    """
-    async with get_session(_session_factory) as session:
-        repository = await _get_repo(session, repo)
-
-        result = await session.execute(
-            select(Page)
-            .where(
-                Page.repository_id == repository.id,
-                Page.confidence < threshold,
-            )
-            .order_by(Page.confidence)
-            .limit(50)
-        )
-        pages = result.scalars().all()
-
-        return {
-            "stale_pages": [
-                {
-                    "id": p.id,
-                    "title": p.title,
-                    "page_type": p.page_type,
-                    "confidence_score": p.confidence,
-                    "stale_since": p.updated_at.isoformat() if p.updated_at else None,
-                    "source_files": [p.target_path],
-                }
-                for p in pages
-            ]
-        }
-
-
-# ---------------------------------------------------------------------------
-# Tool 9: get_file_history
-# ---------------------------------------------------------------------------
-
-
-@mcp.tool()
-async def get_file_history(
-    file_path: str, repo: str | None = None, limit: int = 10
-) -> dict:
-    """Get the git history for a file — the WHY behind its current structure.
-
-    Call this before making changes to understand why code was written as it was.
-
-    Args:
-        file_path: Relative file path (e.g. "src/auth/service.py").
-        repo: Repository path, name, or ID.
-        limit: Max significant commits to return (default 10).
-    """
-    async with get_session(_session_factory) as session:
-        repository = await _get_repo(session, repo)
-
-        result = await session.execute(
-            select(GitMetadata).where(
-                GitMetadata.repository_id == repository.id,
-                GitMetadata.file_path == file_path,
-            )
-        )
-        meta = result.scalar_one_or_none()
-
-        if meta is None:
-            return {"error": f"No git metadata found for '{file_path}'"}
-
-        significant_commits = json.loads(meta.significant_commits_json)
-        co_change_partners = json.loads(meta.co_change_partners_json)
-
-        return {
-            "file_path": meta.file_path,
-            "age_days": meta.age_days,
-            "primary_owner": {
-                "name": meta.primary_owner_name,
-                "email": meta.primary_owner_email,
-                "pct": meta.primary_owner_commit_pct,
-            },
-            "is_hotspot": meta.is_hotspot,
-            "is_stable": meta.is_stable,
-            "commit_count_total": meta.commit_count_total,
-            "commit_count_90d": meta.commit_count_90d,
-            "significant_commits": significant_commits[:limit],
-            "co_change_partners": [
-                {
-                    "file_path": p.get("file_path", p.get("path", "")),
-                    "co_change_count": p.get("co_change_count", p.get("count", 0)),
-                }
-                for p in co_change_partners
-            ],
-        }
-
-
-# ---------------------------------------------------------------------------
-# Tool 10: get_hotspots
-# ---------------------------------------------------------------------------
-
-
-@mcp.tool()
-async def get_hotspots(
-    repo: str | None = None,
-    limit: int = 10,
-    include_stable: bool = False,
-) -> dict:
-    """Get the riskiest files: high churn AND high complexity.
-
-    These are the files most likely to contain bugs.
-
-    Args:
-        repo: Repository path, name, or ID.
-        limit: Max hotspots to return (default 10).
-        include_stable: Also return stable files (default false).
-    """
-    async with get_session(_session_factory) as session:
-        repository = await _get_repo(session, repo)
-
-        result = await session.execute(
-            select(GitMetadata)
-            .where(
-                GitMetadata.repository_id == repository.id,
-                GitMetadata.is_hotspot == True,  # noqa: E712
-            )
-            .order_by(GitMetadata.churn_percentile.desc())
-            .limit(limit)
-        )
-        hotspots = result.scalars().all()
-
-        response: dict[str, Any] = {
-            "hotspots": [
-                {
-                    "file_path": h.file_path,
-                    "commit_count_90d": h.commit_count_90d,
-                    "churn_percentile": h.churn_percentile,
-                    "primary_owner": h.primary_owner_name,
-                }
-                for h in hotspots
-            ],
-        }
-
-        if include_stable:
-            result = await session.execute(
-                select(GitMetadata)
-                .where(
-                    GitMetadata.repository_id == repository.id,
-                    GitMetadata.is_stable == True,  # noqa: E712
-                )
-                .order_by(GitMetadata.commit_count_total.desc())
-                .limit(limit)
-            )
-            stables = result.scalars().all()
-            response["stable_files"] = [
-                {
-                    "file_path": s.file_path,
-                    "commit_count_total": s.commit_count_total,
-                    "primary_owner": s.primary_owner_name,
-                }
-                for s in stables
-            ]
-
-        return response
-
-
-# ---------------------------------------------------------------------------
-# Tool 11: get_codebase_ownership
-# ---------------------------------------------------------------------------
-
-
-@mcp.tool()
-async def get_codebase_ownership(
-    repo: str | None = None, by: str = "module"
-) -> dict:
-    """Get ownership breakdown. Identifies knowledge silos and abandoned areas.
-
-    Args:
-        repo: Repository path, name, or ID.
-        by: Granularity — "file", "module", or "package" (default "module").
-    """
-    async with get_session(_session_factory) as session:
-        repository = await _get_repo(session, repo)
-
-        result = await session.execute(
-            select(GitMetadata).where(
-                GitMetadata.repository_id == repository.id,
-            )
-        )
-        all_meta = list(result.scalars().all())
-
-    if by == "file":
-        return {
-            "by_file": [
-                {
-                    "file_path": m.file_path,
-                    "primary_owner": m.primary_owner_name,
-                    "owner_pct": m.primary_owner_commit_pct,
-                    "contributor_count": len(json.loads(m.top_authors_json)),
-                    "is_silo": (m.primary_owner_commit_pct or 0) > 0.8,
-                    "last_commit_days_ago": m.age_days,
-                }
-                for m in all_meta
-            ]
-        }
-
-    # Group by module (top-level directory)
-    modules: dict[str, list[GitMetadata]] = {}
-    for m in all_meta:
-        parts = m.file_path.split("/")
-        module = parts[0] if len(parts) > 1 else "root"
-        modules.setdefault(module, []).append(m)
-
-    entries = []
-    for module_path, files in sorted(modules.items()):
-        owners: dict[str, int] = {}
-        all_contributors: set[str] = set()
-        for f in files:
-            if f.primary_owner_name:
-                owners[f.primary_owner_name] = owners.get(f.primary_owner_name, 0) + 1
-            for author in json.loads(f.top_authors_json):
-                name = author.get("name", "")
-                if name:
-                    all_contributors.add(name)
-
-        if owners:
-            top_owner = max(owners, key=owners.get)  # type: ignore[arg-type]
-            owner_pct = owners[top_owner] / len(files)
-        else:
-            top_owner = None
-            owner_pct = 0.0
-
-        entries.append(
-            {
-                "module_path": module_path,
-                "primary_owner": top_owner,
-                "owner_pct": owner_pct,
-                "contributor_count": len(all_contributors),
-                "is_silo": owner_pct > 0.8,
-                "last_commit_days_ago": min(
-                    (f.age_days for f in files), default=0
-                ),
-            }
-        )
-
-    return {"by_module": entries}
-
-
-# ---------------------------------------------------------------------------
-# Tool 12: get_co_changes
-# ---------------------------------------------------------------------------
-
-
-@mcp.tool()
-async def get_co_changes(
-    file_path: str, repo: str | None = None, min_count: int = 3
-) -> dict:
-    """Get files that frequently change together with the given file.
-
-    Essential before refactoring — reveals hidden coupling not visible in imports.
-
-    Args:
-        file_path: Relative file path.
-        repo: Repository path, name, or ID.
-        min_count: Minimum co-change count to include (default 3).
-    """
-    async with get_session(_session_factory) as session:
-        repository = await _get_repo(session, repo)
-
-        result = await session.execute(
-            select(GitMetadata).where(
-                GitMetadata.repository_id == repository.id,
-                GitMetadata.file_path == file_path,
-            )
-        )
-        meta = result.scalar_one_or_none()
-
-        if meta is None:
-            return {"error": f"No git metadata found for '{file_path}'"}
-
-        partners = json.loads(meta.co_change_partners_json)
-        filtered = [p for p in partners if p.get("co_change_count", p.get("count", 0)) >= min_count]
-
-        # Check if partners have import relationships
-        partner_paths = [p.get("file_path", p.get("path", "")) for p in filtered]
-        result = await session.execute(
-            select(GraphEdge).where(
-                GraphEdge.repository_id == repository.id,
-                GraphEdge.source_node_id == file_path,
-            )
-        )
-        outgoing = {e.target_node_id for e in result.scalars().all()}
-
-        result = await session.execute(
-            select(GraphEdge).where(
-                GraphEdge.repository_id == repository.id,
-                GraphEdge.target_node_id == file_path,
-            )
-        )
-        incoming = {e.source_node_id for e in result.scalars().all()}
-        import_related = outgoing | incoming
-
-        enriched_partners = []
-        for p in filtered:
-            p_path = p.get("file_path", p.get("path", ""))
-            # Try to get a wiki page snippet
-            page_id = f"file_page:{p_path}"
-            page = await session.get(Page, page_id)
-            snippet = page.content[:150] + "..." if page and len(page.content) > 150 else (page.content if page else None)
-
-            enriched_partners.append(
-                {
-                    "file_path": p_path,
-                    "co_change_count": p.get("count", 0),
-                    "has_import_relationship": p_path in import_related,
-                    "wiki_page_snippet": snippet,
-                }
-            )
-
-        return {
-            "file_path": file_path,
-            "co_change_partners": enriched_partners,
-        }
-
-
-# ---------------------------------------------------------------------------
-# Tool 13: get_dead_code
+# Tool 7: get_dead_code (unchanged)
 # ---------------------------------------------------------------------------
 
 
@@ -1104,234 +1138,92 @@ async def get_dead_code(
 
 
 # ---------------------------------------------------------------------------
-# Tool 14: get_decisions
+# Tool 8: get_architecture_diagram (unchanged)
 # ---------------------------------------------------------------------------
 
 
 @mcp.tool()
-async def get_decisions(
-    module: str | None = None,
-    tag: str | None = None,
-    include_proposed: bool = False,
-    include_stale: bool = True,
+async def get_architecture_diagram(
+    scope: str = "repo",
+    path: str | None = None,
+    diagram_type: str = "auto",
     repo: str | None = None,
 ) -> dict:
-    """Get architectural decision records for the codebase.
-
-    Use this before making architectural changes to understand existing
-    constraints and why things are built the way they are.
+    """Get a Mermaid diagram for the codebase or a specific module.
 
     Args:
-        module: Filter by module path (e.g. "src/auth", "packages/core").
-        tag: Filter by tag: auth, database, api, performance, security, infra, testing.
-        include_proposed: Include unconfirmed proposed decisions (default false).
-        include_stale: Include decisions with high staleness scores (default true).
+        scope: "repo", "module", or "file".
+        path: Module or file path (required for module/file scope).
+        diagram_type: "auto", "flowchart", "class", or "sequence".
         repo: Repository path, name, or ID.
     """
-    from wikicode.core.persistence.crud import list_decisions as _list_decisions
-
     async with get_session(_session_factory) as session:
         repository = await _get_repo(session, repo)
 
-        statuses = ["active"]
-        if include_proposed:
-            statuses.append("proposed")
+        if scope == "repo":
+            # Return the architecture diagram page
+            result = await session.execute(
+                select(Page).where(
+                    Page.repository_id == repository.id,
+                    Page.page_type == "architecture_diagram",
+                )
+            )
+            page = result.scalar_one_or_none()
+            if page:
+                return {
+                    "diagram_type": diagram_type if diagram_type != "auto" else "flowchart",
+                    "mermaid_syntax": page.content,
+                    "description": page.title,
+                }
 
-        decisions = await _list_decisions(
-            session,
-            repository.id,
-            tag=tag,
-            module=module,
-            include_proposed=include_proposed,
-            limit=50,
+        # For module/file scope or fallback, build diagram from graph
+        if path:
+            filter_prefix = path
+        else:
+            filter_prefix = ""
+
+        result = await session.execute(
+            select(GraphNode).where(
+                GraphNode.repository_id == repository.id,
+                GraphNode.node_id.like(f"{filter_prefix}%") if filter_prefix else GraphNode.repository_id == repository.id,
+            )
         )
+        nodes = result.scalars().all()
 
-    # Filter stale if requested
-    if not include_stale:
-        decisions = [d for d in decisions if d.staleness_score < 0.5]
-
-    # Filter to requested statuses
-    decisions = [d for d in decisions if d.status in statuses]
-
-    return {
-        "decisions": [
-            {
-                "id": d.id,
-                "title": d.title,
-                "status": d.status,
-                "context": d.context,
-                "decision": d.decision,
-                "rationale": d.rationale,
-                "alternatives": json.loads(d.alternatives_json),
-                "consequences": json.loads(d.consequences_json),
-                "affected_files": json.loads(d.affected_files_json),
-                "affected_modules": json.loads(d.affected_modules_json),
-                "tags": json.loads(d.tags_json),
-                "source": d.source,
-                "confidence": d.confidence,
-                "staleness_score": d.staleness_score,
-            }
-            for d in decisions
-        ],
-        "total": len(decisions),
-    }
-
-
-# ---------------------------------------------------------------------------
-# Tool 15: get_why
-# ---------------------------------------------------------------------------
-
-
-@mcp.tool()
-async def get_why(query: str, repo: str | None = None) -> dict:
-    """Answer 'why is X implemented this way?' using decision records and docs.
-
-    Use this before modifying significant code to understand architectural intent
-    and prevent re-introducing previously solved problems.
-
-    Args:
-        query: Natural language question (e.g. "why is auth using JWT?").
-        repo: Repository path, name, or ID.
-    """
-    from wikicode.core.persistence.crud import list_decisions as _list_decisions
-
-    async with get_session(_session_factory) as session:
-        repository = await _get_repo(session, repo)
-
-        # Keyword match on decision title and body (include proposed —
-        # auto-extracted decisions start as "proposed" and would otherwise
-        # be invisible to this tool)
-        all_decisions = await _list_decisions(
-            session, repository.id, include_proposed=True, limit=200
+        result = await session.execute(
+            select(GraphEdge).where(
+                GraphEdge.repository_id == repository.id,
+            )
         )
+        edges = result.scalars().all()
 
-    # Score decisions by keyword relevance
-    query_lower = query.lower()
-    query_words = set(query_lower.split())
-    scored_decisions = []
-    for d in all_decisions:
-        text = f"{d.title} {d.decision} {d.rationale}".lower()
-        match_count = sum(1 for w in query_words if w in text)
-        if match_count > 0:
-            scored_decisions.append((match_count, d))
-    scored_decisions.sort(key=lambda t: t[0], reverse=True)
-    keyword_matches = [d for _, d in scored_decisions[:5]]
+        node_ids = {n.node_id for n in nodes}
+        relevant_edges = [
+            e for e in edges
+            if e.source_node_id in node_ids or e.target_node_id in node_ids
+        ]
 
-    # Semantic search over decision vector store
-    decision_results = []
-    try:
-        decision_results = await _decision_store.search(query, limit=5)
-    except Exception:
-        pass
+        # Build Mermaid flowchart
+        lines = ["graph TD"]
+        seen_nodes = set()
+        for e in relevant_edges[:50]:  # Limit to 50 edges for readability
+            src = e.source_node_id.replace("/", "_").replace(".", "_").replace("-", "_")
+            tgt = e.target_node_id.replace("/", "_").replace(".", "_").replace("-", "_")
+            if src not in seen_nodes:
+                lines.append(f'    {src}["{e.source_node_id}"]')
+                seen_nodes.add(src)
+            if tgt not in seen_nodes:
+                lines.append(f'    {tgt}["{e.target_node_id}"]')
+                seen_nodes.add(tgt)
+            lines.append(f"    {src} --> {tgt}")
 
-    # Semantic search over documentation
-    doc_results = []
-    try:
-        doc_results = await _vector_store.search(query, limit=3)
-    except Exception:
-        try:
-            doc_results = await _fts.search(query, limit=3)
-        except Exception:
-            pass
+        mermaid = "\n".join(lines) if len(lines) > 1 else "graph TD\n    A[No graph data available]"
 
-    # Merge keyword matches with semantic results (dedup by ID)
-    seen_ids: set[str] = set()
-    merged_decisions = []
-    for d in keyword_matches:
-        if d.id not in seen_ids:
-            seen_ids.add(d.id)
-            merged_decisions.append({
-                "id": d.id,
-                "title": d.title,
-                "status": d.status,
-                "decision": d.decision,
-                "rationale": d.rationale,
-                "consequences": json.loads(d.consequences_json),
-                "affected_files": json.loads(d.affected_files_json),
-                "source": d.source,
-                "confidence": d.confidence,
-            })
-
-    # Add semantic decision results (from vector store — these are SearchResult objects)
-    for r in decision_results:
-        if r.page_id not in seen_ids:
-            seen_ids.add(r.page_id)
-            merged_decisions.append({
-                "id": r.page_id,
-                "title": r.title,
-                "snippet": r.snippet,
-                "relevance_score": r.score,
-            })
-
-    return {
-        "query": query,
-        "decisions": merged_decisions[:8],
-        "related_documentation": [
-            {
-                "page_id": r.page_id,
-                "title": r.title,
-                "page_type": r.page_type,
-                "snippet": r.snippet,
-                "relevance_score": r.score,
-            }
-            for r in doc_results[:3]
-        ],
-    }
-
-
-# ---------------------------------------------------------------------------
-# Tool 16: get_decision_health
-# ---------------------------------------------------------------------------
-
-
-@mcp.tool()
-async def get_decision_health(repo: str | None = None) -> dict:
-    """Get the health status of architectural decision records.
-
-    Returns stale decisions, ungoverned hotspots (high-churn files with no
-    decisions), and proposed decisions awaiting confirmation.
-
-    Args:
-        repo: Repository path, name, or ID.
-    """
-    from wikicode.core.persistence.crud import get_decision_health_summary
-
-    async with get_session(_session_factory) as session:
-        repository = await _get_repo(session, repo)
-        health = await get_decision_health_summary(session, repository.id)
-
-    stale = health["stale_decisions"]
-    proposed = health["proposed_awaiting_review"]
-    ungoverned = health["ungoverned_hotspots"]
-
-    return {
-        "summary": (
-            f"{health['summary'].get('active', 0)} active · "
-            f"{health['summary'].get('stale', 0)} stale · "
-            f"{len(proposed)} proposed · "
-            f"{len(ungoverned)} ungoverned hotspots"
-        ),
-        "counts": health["summary"],
-        "stale_decisions": [
-            {
-                "id": d.id,
-                "title": d.title,
-                "staleness_score": d.staleness_score,
-                "affected_files": json.loads(d.affected_files_json)[:5],
-            }
-            for d in stale[:10]
-        ],
-        "proposed_awaiting_review": [
-            {
-                "id": d.id,
-                "title": d.title,
-                "source": d.source,
-                "confidence": d.confidence,
-            }
-            for d in proposed[:10]
-        ],
-        "ungoverned_hotspots": ungoverned[:15],
-    }
+        return {
+            "diagram_type": diagram_type if diagram_type != "auto" else "flowchart",
+            "mermaid_syntax": mermaid,
+            "description": f"Dependency graph for {scope}: {path or 'entire repo'}",
+        }
 
 
 # ---------------------------------------------------------------------------

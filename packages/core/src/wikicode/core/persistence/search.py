@@ -38,6 +38,43 @@ class SearchResult:
 
 _SNIPPET_LEN = 200
 
+# Common English stop words to strip from FTS queries
+_STOP_WORDS = frozenset({
+    "a", "an", "the", "is", "are", "was", "were", "be", "been", "being",
+    "have", "has", "had", "do", "does", "did", "will", "would", "shall",
+    "should", "may", "might", "must", "can", "could", "am", "to", "of",
+    "in", "for", "on", "with", "at", "by", "from", "as", "into", "about",
+    "it", "its", "this", "that", "these", "those", "i", "we", "you", "he",
+    "she", "they", "me", "him", "her", "us", "them", "my", "your", "his",
+    "our", "their", "what", "which", "who", "whom", "how", "when", "where",
+    "why", "not", "no", "so", "if", "or", "and", "but", "all", "each",
+    "very", "just", "also", "than", "too", "only",
+})
+
+
+def _build_fts5_query(query: str) -> str:
+    """Build an FTS5 MATCH expression from a natural-language query.
+
+    Strips stop words, then joins remaining terms with OR so that pages
+    containing *any* keyword match.  Each term gets a ``*`` suffix for
+    prefix matching (e.g. "pay*" matches "payment", "payload", etc.).
+    Falls back to the raw (quoted) query when all tokens are stop words.
+    """
+    import re
+
+    # Keep only alphanumeric tokens
+    tokens = re.findall(r"[a-zA-Z0-9_]+", query.lower())
+    meaningful = [t for t in tokens if t not in _STOP_WORDS and len(t) > 1]
+
+    if not meaningful:
+        # All stop words — fall back to exact phrase
+        safe = query.replace('"', '""')
+        return f'"{safe}"'
+
+    # FTS5: OR between prefix-match terms gives broad recall;
+    # FTS5 rank (BM25) naturally boosts pages matching more terms.
+    return " OR ".join(f'"{t}"*' for t in meaningful)
+
 
 def _snippet(content: str) -> str:
     return content[:_SNIPPET_LEN].rstrip()
@@ -123,9 +160,7 @@ class FullTextSearch:
 
     async def _search_sqlite(self, query: str, limit: int) -> list[SearchResult]:
         """FTS5 search.  ``rank`` is negative; we negate it to get a positive score."""
-        # FTS5 MATCH syntax: escape special chars with double-quotes
-        safe_query = query.replace('"', '""')
-        fts_query = f'"{safe_query}"'
+        fts_query = _build_fts5_query(query)
 
         async with self._engine.connect() as conn:
             rows = await conn.execute(

@@ -11,7 +11,7 @@ FastAPI REST API, webhook handlers, MCP server, and background job scheduler for
 | Component | Description |
 |-----------|-------------|
 | **REST API** | FastAPI application with full CRUD for repos, pages, symbols, jobs, git analytics, dead code |
-| **MCP Server** | 16 MCP tools for AI coding assistants (Claude Code, Cursor, Cline) |
+| **MCP Server** | 8 MCP tools for AI coding assistants (Claude Code, Cursor, Cline) |
 | **Webhooks** | GitHub and GitLab push event handlers — trigger incremental updates automatically |
 | **Scheduler** | APScheduler background jobs — polling fallback, stale page decay, periodic re-sync |
 
@@ -153,31 +153,23 @@ Job progress events (`JobProgressEvent`) carry: `event` type, `file` currently b
 
 ## MCP Server
 
-WikiCode exposes 16 MCP tools for AI coding assistants. Start the MCP server via:
+WikiCode exposes 8 MCP tools for AI coding assistants. Start the MCP server via:
 
 ```bash
 wikicode mcp                          # stdio transport (Claude Code, Cursor, Cline)
 wikicode mcp --transport sse          # SSE transport on port 7338
 ```
 
-| Tool | Description |
-|------|-------------|
-| `get_page` | Retrieve a wiki page by file path |
-| `list_pages` | List all wiki pages with metadata |
-| `search_codebase` | Full-text, semantic, or hybrid search across all pages |
-| `get_symbol` | Look up a symbol by name — signature, docs, file location |
-| `get_module_overview` | Summary of a package or module |
-| `get_repo_overview` | Repository-level architecture overview |
-| `get_dependency_graph` | Export the dependency graph (optionally filtered) |
-| `get_dependency_path` | Shortest path between two modules in the dependency graph |
-| `get_hotspots` | Files with highest churn — most likely to need attention |
-| `get_ownership` | Code ownership breakdown by file or module |
-| `get_stale_pages` | Pages whose source has changed since last generation |
-| `get_dead_code` | Dead code findings for a file or the whole repo |
-| `get_git_summary` | Recent commit activity and change patterns |
-| `get_decisions` | Architectural decision records for the codebase |
-| `get_why` | Answer "why is X built this way?" using decisions and docs |
-| `get_decision_health` | Stale decisions, ungoverned hotspots, proposed decisions |
+| Tool | What It Answers | When to Call |
+|------|----------------|-------------|
+| `get_overview` | Architecture summary, module map, entry points | First call when exploring an unfamiliar codebase |
+| `get_context(targets)` | Docs, ownership, history, decisions, freshness for files/modules/symbols | When you need to understand specific code before reading or modifying it |
+| `get_risk(targets)` | Hotspot score, dependents, co-change partners, risk summary | Before modifying files — assess what could break |
+| `get_why(query?)` | Architectural decisions, rationale, constraints | Before making architectural changes — understand existing intent |
+| `search_codebase(query)` | Semantic search over full wiki | When you don't know where something lives |
+| `get_dependency_path(from, to)` | Connection path between two files/modules | When you need to understand how two things are connected |
+| `get_dead_code` | Unused/unreachable code sorted by cleanup impact | Before cleanup tasks |
+| `get_architecture_diagram` | Mermaid diagram for repo or module | For documentation or presentation |
 
 **Claude Code / Cursor / Cline setup** — add to your MCP config:
 

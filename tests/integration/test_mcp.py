@@ -45,6 +45,7 @@ async def mcp_env():
     await fts.ensure_index()
     embedder = MockEmbedder()
     vector_store = InMemoryVectorStore(embedder=embedder)
+    decision_store = InMemoryVectorStore(embedder=embedder)
 
     # Populate DB with a realistic multi-file Python project
     async with factory() as session:
@@ -192,6 +193,7 @@ async def mcp_env():
     mcp_mod._session_factory = factory
     mcp_mod._fts = fts
     mcp_mod._vector_store = vector_store
+    mcp_mod._decision_store = decision_store
     mcp_mod._repo_path = "/tmp/sample-project"
 
     yield
@@ -199,8 +201,10 @@ async def mcp_env():
     mcp_mod._session_factory = None
     mcp_mod._fts = None
     mcp_mod._vector_store = None
+    mcp_mod._decision_store = None
     mcp_mod._repo_path = None
 
+    await decision_store.close()
     await vector_store.close()
     await engine.dispose()
 
@@ -212,13 +216,8 @@ async def mcp_env():
 
 @pytest.mark.asyncio
 async def test_mcp_full_exploration_flow(mcp_env):
-    """Test the typical MCP exploration flow: overview → module → file → symbol."""
-    from wikicode.server.mcp_server import (
-        get_file_docs,
-        get_module_docs,
-        get_overview,
-        get_symbol,
-    )
+    """Test the typical MCP exploration flow: overview → get_context for module/file/symbol."""
+    from wikicode.server.mcp_server import get_context, get_overview
 
     # Step 1: Get overview
     overview = await get_overview()
@@ -226,20 +225,26 @@ async def test_mcp_full_exploration_flow(mcp_env):
     assert len(overview["key_modules"]) == 2
     assert overview["architecture_diagram_mermaid"] is not None
 
-    # Step 2: Drill into auth module
-    auth_module = await get_module_docs("src/auth")
-    assert "authentication" in auth_module["content_md"].lower()
-    assert len(auth_module["files"]) == 2
+    # Step 2: Drill into auth module via get_context
+    auth = await get_context(["src/auth"])
+    t = auth["targets"]["src/auth"]
+    assert t["type"] == "module"
+    assert "authentication" in t["docs"]["content_md"].lower()
+    assert len(t["docs"]["files"]) == 2
 
-    # Step 3: Get file docs
-    login_file = await get_file_docs("src/auth/login.py")
-    assert login_file["title"] == "Login Handler"
-    assert any(s["name"] == "login_handler" for s in login_file["symbols"])
+    # Step 3: Get file context
+    login = await get_context(["src/auth/login.py"])
+    t = login["targets"]["src/auth/login.py"]
+    assert t["type"] == "file"
+    assert t["docs"]["title"] == "Login Handler"
+    assert any(s["name"] == "login_handler" for s in t["docs"]["symbols"])
 
     # Step 4: Look up a symbol
-    symbol = await get_symbol("UserRepository")
-    assert symbol["kind"] == "class"
-    assert symbol["file_path"] == "src/data/user_repo.py"
+    sym = await get_context(["UserRepository"])
+    t = sym["targets"]["UserRepository"]
+    assert t["type"] == "symbol"
+    assert t["docs"]["kind"] == "class"
+    assert t["docs"]["file_path"] == "src/data/user_repo.py"
 
 
 @pytest.mark.asyncio
@@ -262,47 +267,40 @@ async def test_mcp_dependency_and_graph_flow(mcp_env):
 
 @pytest.mark.asyncio
 async def test_mcp_git_intelligence_flow(mcp_env):
-    """Test git intelligence tools: history, hotspots, ownership, co-changes."""
-    from wikicode.server.mcp_server import (
-        get_codebase_ownership,
-        get_co_changes,
-        get_file_history,
-        get_hotspots,
-    )
+    """Test git intelligence via get_context and get_risk."""
+    from wikicode.server.mcp_server import get_context, get_risk
 
-    # File history
-    history = await get_file_history("src/auth/login.py")
-    assert history["is_hotspot"] is True
-    assert history["primary_owner"]["name"] == "Alice"
-    assert len(history["co_change_partners"]) == 1
+    # File context with ownership and history
+    ctx = await get_context(["src/auth/login.py"], include=["ownership", "last_change"])
+    t = ctx["targets"]["src/auth/login.py"]
+    assert t["ownership"]["primary_owner"] == "Alice"
+    assert t["ownership"]["owner_pct"] == 0.70
+    assert t["last_change"]["days_ago"] == 443
 
-    # Hotspots
-    hotspots = await get_hotspots()
-    assert len(hotspots["hotspots"]) == 1
-
-    # Ownership
-    ownership = await get_codebase_ownership()
-    assert len(ownership["by_module"]) >= 1
-
-    # Co-changes
-    co = await get_co_changes("src/auth/login.py", min_count=3)
-    assert len(co["co_change_partners"]) == 1
-    assert co["co_change_partners"][0]["file_path"] == "src/auth/jwt.py"
+    # Risk assessment
+    risk = await get_risk(["src/auth/login.py"])
+    t = risk["targets"]["src/auth/login.py"]
+    assert t["hotspot_score"] == 0.95
+    assert len(t["co_change_partners"]) == 1
+    assert t["co_change_partners"][0]["file_path"] == "src/auth/jwt.py"
+    assert "global_hotspots" in risk
 
 
 @pytest.mark.asyncio
-async def test_mcp_dead_code_and_stale_flow(mcp_env):
-    """Test dead code and stale pages tools."""
-    from wikicode.server.mcp_server import get_dead_code, get_stale_pages
+async def test_mcp_dead_code_and_freshness_flow(mcp_env):
+    """Test dead code tool and freshness via get_context."""
+    from wikicode.server.mcp_server import get_context, get_dead_code
 
     # Dead code
     dead = await get_dead_code()
     assert dead["summary"]["total_findings"] == 1
     assert dead["findings"][0]["symbol_name"] == "deprecated_verify"
 
-    # Stale pages (all have confidence 0.9, so threshold 0.95 catches them)
-    stale = await get_stale_pages(threshold=0.95)
-    assert len(stale["stale_pages"]) >= 1
+    # Freshness via get_context (all pages have confidence 0.9)
+    ctx = await get_context(["src/auth/login.py"], include=["freshness"])
+    t = ctx["targets"]["src/auth/login.py"]
+    assert t["freshness"]["confidence_score"] == 0.9
+    assert t["freshness"]["is_stale"] is False
 
 
 @pytest.mark.asyncio

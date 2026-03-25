@@ -76,7 +76,7 @@ For per-package detail (installation, full API reference, all CLI flags, file ma
 │      Three Stores     │   │              Consumers                  │
 │                      │   │                                         │
 │  SQL (wiki pages,    │   │  Web UI     MCP Server   GitHub Action  │
-│  jobs, symbols,      │   │  (Next.js)  (16 tools)   (CI/CD)        │
+│  jobs, symbols,      │   │  (Next.js)  (8 tools)    (CI/CD)        │
 │  versions)           │   │                                         │
 │                      │   │  wikicode CLI                           │
 │  Vector (LanceDB /   │   │  (init, update, watch,                  │
@@ -155,13 +155,13 @@ wikicode/
 │   ├── server/                 # Python: FastAPI REST API + MCP server
 │   │   └── src/wikicode/server/
 │   │       ├── api/             # FastAPI routers (repos, pages, jobs, symbols, graph, git, dead-code, decisions, search)
-│   │       ├── mcp_server.py    # MCP server (16 tools)
+│   │       ├── mcp_server.py    # MCP server (8 tools)
 │   │       ├── webhooks/        # GitHub + GitLab handlers
 │   │       └── scheduler.py     # APScheduler background jobs
 │   │
 │   ├── cli/                    # Python: wikicode CLI (click + rich)
 │   │   └── src/wikicode/cli/
-│   │       └── commands/        # init, update, watch, serve, search, export, status, doctor, dead-code, decision, mcp
+│   │       └── commands/        # init, update, watch, serve, search, export, status, doctor, dead-code, decision, mcp, reindex
 │   │
 │   └── web/                    # Next.js 15 frontend
 │       ├── src/app/             # App Router pages (dashboard, wiki, search, graph, symbols, …)
@@ -255,7 +255,8 @@ natural language query. This is better than full-text search for questions like
 
 If you delete the vector store (LanceDB directory or pgvector embeddings), search
 quality degrades and generation context becomes shallower — rebuild it by running
-`wikicode index --rebuild` which re-embeds all existing SQL pages.
+`wikicode reindex` which re-embeds all existing SQL pages into LanceDB using
+the configured embedder (Gemini or OpenAI). No LLM calls — only embedding API calls.
 
 ### 3.3 Graph Store (NetworkX / SQLite-backed)
 
@@ -902,9 +903,8 @@ was recorded. Decisions with `staleness_score > 0.5` are flagged as stale.
 
 ### MCP Tools
 
-- `get_decisions(module?, tag?, include_proposed?, include_stale?)` — query decision records
-- `get_why(query)` — semantic search over decisions + documentation, answers "why" questions
-- `get_decision_health()` — stale decisions, ungoverned hotspots, proposed decisions needing review
+- `get_why(query?)` — three modes: natural language search over decisions, path-based lookup for decisions governing a file, or no-arg for decision health dashboard (stale decisions, ungoverned hotspots, proposed decisions needing review)
+- `get_context(targets, include?)` — includes decisions governing each target in its response
 
 ### CLI Commands
 
@@ -925,7 +925,7 @@ wikicode decision health     # health summary
 | `core/analysis/decision_extractor.py` | All 4 capture sources + staleness computation |
 | `core/persistence/models.py` | `DecisionRecord` ORM model |
 | `core/persistence/crud.py` | 8 decision CRUD functions |
-| `server/mcp_server.py` | 3 MCP tools (get_decisions, get_why, get_decision_health) |
+| `server/mcp_server.py` | MCP tool `get_why` (3-mode: search, path, health dashboard) |
 | `server/routers/decisions.py` | REST API endpoints |
 | `cli/commands/decision_cmd.py` | CLI command group (7 subcommands) |
 
@@ -939,30 +939,25 @@ can call in real time.
 
 Instead of an AI assistant reading 40 source files to understand a codebase,
 it calls `get_overview()` and gets a structured, always-current architecture summary.
-Instead of grepping for a function, it calls `get_symbol("AuthService.login")`.
+Instead of calling 5 tools one at a time, it calls `get_context(["src/auth/service.py", "AuthService"])` and gets docs, ownership, decisions, and freshness for all targets in one call.
 
 The server is implemented using the [MCP Python SDK](https://github.com/modelcontextprotocol/python-sdk)
 and supports two transports:
 - **stdio** — for Claude Code, Cursor, Cline (add to their MCP config)
 - **SSE** — for web-based MCP clients (served on port 7338)
 
-### Tools
+### Tools (8 total)
 
-| Tool | What it answers |
-|------|----------------|
-| `get_overview` | Architecture summary, module map, entry points. Best first call. |
-| `get_module_docs` | Wiki page for a package/directory. Public API + file map. |
-| `get_file_docs` | Wiki page for a specific file. Symbols, imports, freshness. |
-| `get_symbol` | Any function/class/method by name. Fuzzy match if exact fails. |
-| `search_codebase` | Semantic search over the full wiki. Natural language. |
-| `get_architecture_diagram` | Mermaid diagram for repo or specific module. |
-| `get_dependency_path` | How is symbol A connected to symbol B? |
-| `get_stale_pages` | Which pages have confidence score below threshold. |
-| `get_file_history` | Git history for a file: ownership, significant commits, co-changes. |
-| `get_hotspots` | High-churn + high-complexity files — most likely to contain bugs. |
-| `get_codebase_ownership` | Ownership breakdown by file/module/package. Identifies silos. |
-| `get_co_changes` | Files that change together without import link — hidden coupling. |
-| `get_dead_code` | Dead/unused code findings sorted by confidence and cleanup impact. |
+| Tool | What it answers | When to call |
+|------|----------------|-------------|
+| `get_overview` | Architecture summary, module map, entry points. | First call when exploring an unfamiliar codebase. |
+| `get_context(targets, include?)` | Docs, ownership, history, decisions, freshness for files/modules/symbols. Pass multiple targets in one call. | When you need to understand specific code before reading or modifying it. |
+| `get_risk(targets)` | Hotspot score, dependents, co-change partners, risk summary per target. Also returns top 5 global hotspots. | Before modifying files — assess what could break. |
+| `get_why(query?)` | Three modes: NL search over decisions, path-based decisions for a file, no-arg health dashboard. | Before making architectural changes — understand existing intent. |
+| `search_codebase(query)` | Semantic search over the full wiki. Natural language. | When you don't know where something lives. |
+| `get_dependency_path(from, to)` | Connection path between two files/modules in the dependency graph. | When you need to understand how two things are connected. |
+| `get_dead_code` | Dead/unused code findings sorted by confidence and cleanup impact. | Before cleanup tasks. |
+| `get_architecture_diagram` | Mermaid diagram for repo or specific module. | For documentation or presentation. |
 
 ### Auto-generated Config
 

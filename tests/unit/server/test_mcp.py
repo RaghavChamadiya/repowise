@@ -1,6 +1,6 @@
 """Unit tests for WikiCode MCP server tools.
 
-Tests all 16 MCP tools using an in-memory SQLite database with pre-populated
+Tests all 8 MCP tools using an in-memory SQLite database with pre-populated
 test data, mirroring the conftest pattern from the REST API tests.
 """
 
@@ -18,6 +18,7 @@ from wikicode.core.persistence.database import init_db
 from wikicode.core.persistence.embedder import MockEmbedder
 from wikicode.core.persistence.models import (
     DeadCodeFinding,
+    DecisionRecord,
     GitMetadata,
     GraphEdge,
     GraphNode,
@@ -473,6 +474,50 @@ async def populated_db(session: AsyncSession, repo_id: str) -> str:
     for f in findings:
         session.add(f)
 
+    # ---- Decision Records ----
+    decisions = [
+        DecisionRecord(
+            id="dec1",
+            repository_id=rid,
+            title="Use JWT for authentication",
+            status="proposed",
+            context="Need stateless auth for microservices",
+            decision="Use JWT tokens for all API authentication",
+            rationale="Stateless, scalable, works across services",
+            alternatives_json=json.dumps(["Session-based auth", "OAuth2 only"]),
+            consequences_json=json.dumps(["Must handle token refresh", "Token size overhead"]),
+            affected_files_json=json.dumps(["src/auth/service.py", "src/auth/middleware.py"]),
+            affected_modules_json=json.dumps(["src/auth"]),
+            tags_json=json.dumps(["auth", "security"]),
+            source="readme_mining",
+            confidence=0.6,
+            staleness_score=0.1,
+            created_at=_NOW,
+            updated_at=_NOW,
+        ),
+        DecisionRecord(
+            id="dec2",
+            repository_id=rid,
+            title="SQLAlchemy as ORM",
+            status="proposed",
+            context="Need an async-compatible ORM for Python",
+            decision="Use SQLAlchemy 2.0 with async support",
+            rationale="Mature, well-documented, async support in 2.0",
+            alternatives_json=json.dumps(["Tortoise ORM", "Django ORM"]),
+            consequences_json=json.dumps(["Learning curve for async patterns"]),
+            affected_files_json=json.dumps(["src/db/models.py"]),
+            affected_modules_json=json.dumps(["src/db"]),
+            tags_json=json.dumps(["database"]),
+            source="git_archaeology",
+            confidence=0.7,
+            staleness_score=0.0,
+            created_at=_NOW,
+            updated_at=_NOW,
+        ),
+    ]
+    for d in decisions:
+        session.add(d)
+
     await session.flush()
     return rid
 
@@ -490,6 +535,7 @@ async def setup_mcp(factory, fts, vector_store, populated_db):
     mcp_mod._session_factory = factory
     mcp_mod._fts = fts
     mcp_mod._vector_store = vector_store
+    mcp_mod._decision_store = InMemoryVectorStore(embedder=MockEmbedder())
     mcp_mod._repo_path = "/tmp/test-repo"
 
     yield populated_db
@@ -498,6 +544,7 @@ async def setup_mcp(factory, fts, vector_store, populated_db):
     mcp_mod._session_factory = None
     mcp_mod._fts = None
     mcp_mod._vector_store = None
+    mcp_mod._decision_store = None
     mcp_mod._repo_path = None
 
 
@@ -534,92 +581,201 @@ async def test_get_overview_repo_not_found(setup_mcp):
         await get_overview(repo="/nonexistent")
 
 
-# ---- Tool 2: get_module_docs ----
+# ---- Tool 2: get_context ----
 
 
 @pytest.mark.asyncio
-async def test_get_module_docs(setup_mcp):
-    from wikicode.server.mcp_server import get_module_docs
+async def test_get_context_single_file(setup_mcp):
+    from wikicode.server.mcp_server import get_context
 
-    result = await get_module_docs("src/auth")
-    assert result["title"] == "Auth Module"
-    assert "authentication" in result["content_md"].lower()
-    assert len(result["files"]) == 2  # service.py and middleware.py
-    assert result["public_api_summary"]
-
-
-@pytest.mark.asyncio
-async def test_get_module_docs_not_found(setup_mcp):
-    from wikicode.server.mcp_server import get_module_docs
-
-    result = await get_module_docs("src/nonexistent")
-    assert "error" in result
-
-
-# ---- Tool 3: get_file_docs ----
-
-
-@pytest.mark.asyncio
-async def test_get_file_docs(setup_mcp):
-    from wikicode.server.mcp_server import get_file_docs
-
-    result = await get_file_docs("src/auth/service.py")
-    assert result["title"] == "Auth Service"
-    assert "AuthService" in result["content_md"]
-    assert len(result["symbols"]) == 2
-    assert any(s["name"] == "AuthService" for s in result["symbols"])
-    assert any(s["name"] == "login" for s in result["symbols"])
-    assert "src/auth/middleware.py" in result["imported_by"]
-    assert result["confidence_score"] == 0.85
-    assert result["freshness_status"] == "fresh"
+    result = await get_context(["src/auth/service.py"])
+    targets = result["targets"]
+    assert "src/auth/service.py" in targets
+    t = targets["src/auth/service.py"]
+    assert t["type"] == "file"
+    # Docs
+    assert t["docs"]["title"] == "Auth Service"
+    assert "AuthService" in t["docs"]["content_md"]
+    assert len(t["docs"]["symbols"]) == 2
+    assert any(s["name"] == "AuthService" for s in t["docs"]["symbols"])
+    assert "src/auth/middleware.py" in t["docs"]["imported_by"]
+    # Ownership
+    assert t["ownership"]["primary_owner"] == "Alice"
+    assert t["ownership"]["owner_pct"] == 0.65
+    assert t["ownership"]["contributor_count"] == 2
+    # Last change
+    assert t["last_change"]["author"] == "Alice"
+    assert t["last_change"]["days_ago"] == 443
+    # Decisions
+    assert len(t["decisions"]) >= 1
+    assert any(d["title"] == "Use JWT for authentication" for d in t["decisions"])
+    # Freshness
+    assert t["freshness"]["confidence_score"] == 0.85
+    assert t["freshness"]["freshness_status"] == "fresh"
+    assert t["freshness"]["is_stale"] is False
 
 
 @pytest.mark.asyncio
-async def test_get_file_docs_not_found(setup_mcp):
-    from wikicode.server.mcp_server import get_file_docs
+async def test_get_context_single_module(setup_mcp):
+    from wikicode.server.mcp_server import get_context
 
-    result = await get_file_docs("src/nonexistent.py")
-    assert "error" in result
-
-
-# ---- Tool 4: get_symbol ----
-
-
-@pytest.mark.asyncio
-async def test_get_symbol_exact_match(setup_mcp):
-    from wikicode.server.mcp_server import get_symbol
-
-    result = await get_symbol("AuthService")
-    assert result["name"] == "AuthService"
-    assert result["kind"] == "class"
-    assert result["file_path"] == "src/auth/service.py"
-    assert result["signature"] == "class AuthService"
-    assert result["documentation"]  # Has content from page
+    result = await get_context(["src/auth"])
+    targets = result["targets"]
+    assert "src/auth" in targets
+    t = targets["src/auth"]
+    assert t["type"] == "module"
+    assert t["docs"]["title"] == "Auth Module"
+    assert "authentication" in t["docs"]["content_md"].lower()
+    assert len(t["docs"]["files"]) == 2  # service.py and middleware.py
+    # Freshness from module page
+    assert t["freshness"]["confidence_score"] == 0.95
 
 
 @pytest.mark.asyncio
-async def test_get_symbol_fuzzy_match(setup_mcp):
-    from wikicode.server.mcp_server import get_symbol
+async def test_get_context_single_symbol(setup_mcp):
+    from wikicode.server.mcp_server import get_context
 
-    result = await get_symbol("Auth")  # Partial match
-    assert result["name"] == "AuthService"
+    result = await get_context(["AuthService"])
+    targets = result["targets"]
+    assert "AuthService" in targets
+    t = targets["AuthService"]
+    assert t["type"] == "symbol"
+    assert t["docs"]["name"] == "AuthService"
+    assert t["docs"]["kind"] == "class"
+    assert t["docs"]["signature"] == "class AuthService"
+    assert t["docs"]["file_path"] == "src/auth/service.py"
+    assert t["docs"]["documentation"]  # Has content from file page
 
 
 @pytest.mark.asyncio
-async def test_get_symbol_with_kind(setup_mcp):
-    from wikicode.server.mcp_server import get_symbol
+async def test_get_context_multiple_targets(setup_mcp):
+    from wikicode.server.mcp_server import get_context
 
-    result = await get_symbol("login", kind="method")
-    assert result["name"] == "login"
-    assert result["kind"] == "method"
+    result = await get_context(["src/auth/service.py", "src/auth", "AuthService"])
+    targets = result["targets"]
+    assert len(targets) == 3
+    assert targets["src/auth/service.py"]["type"] == "file"
+    assert targets["src/auth"]["type"] == "module"
+    assert targets["AuthService"]["type"] == "symbol"
 
 
 @pytest.mark.asyncio
-async def test_get_symbol_not_found(setup_mcp):
-    from wikicode.server.mcp_server import get_symbol
+async def test_get_context_include_filter(setup_mcp):
+    from wikicode.server.mcp_server import get_context
 
-    result = await get_symbol("NonExistentSymbol123")
-    assert "error" in result
+    result = await get_context(["src/auth/service.py"], include=["docs"])
+    t = result["targets"]["src/auth/service.py"]
+    assert "docs" in t
+    assert "ownership" not in t
+    assert "last_change" not in t
+    assert "decisions" not in t
+    assert "freshness" not in t
+
+
+@pytest.mark.asyncio
+async def test_get_context_not_found(setup_mcp):
+    from wikicode.server.mcp_server import get_context
+
+    result = await get_context(["nonexistent_thing_xyz"])
+    t = result["targets"]["nonexistent_thing_xyz"]
+    assert "error" in t
+
+
+# ---- Tool 3: get_risk ----
+
+
+@pytest.mark.asyncio
+async def test_get_risk_single_target(setup_mcp):
+    from wikicode.server.mcp_server import get_risk
+
+    result = await get_risk(["src/auth/service.py"])
+    targets = result["targets"]
+    assert "src/auth/service.py" in targets
+    t = targets["src/auth/service.py"]
+    assert t["hotspot_score"] == 0.92
+    assert t["dependents_count"] >= 1  # middleware imports it
+    assert len(t["co_change_partners"]) == 2
+    assert t["primary_owner"] == "Alice"
+    assert t["owner_pct"] == 0.65
+    assert "risk_summary" in t
+    assert "hotspot score" in t["risk_summary"]
+
+
+@pytest.mark.asyncio
+async def test_get_risk_multiple_targets(setup_mcp):
+    from wikicode.server.mcp_server import get_risk
+
+    result = await get_risk(["src/auth/service.py", "src/db/models.py"])
+    targets = result["targets"]
+    assert len(targets) == 2
+    assert "global_hotspots" in result
+
+
+@pytest.mark.asyncio
+async def test_get_risk_global_hotspots_exclude_targets(setup_mcp):
+    from wikicode.server.mcp_server import get_risk
+
+    result = await get_risk(["src/auth/service.py"])
+    # service.py is a hotspot but should NOT appear in global_hotspots
+    for h in result["global_hotspots"]:
+        assert h["file_path"] != "src/auth/service.py"
+
+
+@pytest.mark.asyncio
+async def test_get_risk_no_git_metadata(setup_mcp):
+    from wikicode.server.mcp_server import get_risk
+
+    result = await get_risk(["src/auth/middleware.py"])
+    t = result["targets"]["src/auth/middleware.py"]
+    assert t["hotspot_score"] == 0.0  # No git metadata for this file
+    assert "risk_summary" in t
+
+
+# ---- Tool 4: get_why ----
+
+
+@pytest.mark.asyncio
+async def test_get_why_natural_language(setup_mcp):
+    from wikicode.server.mcp_server import get_why
+
+    result = await get_why("why is JWT used for authentication")
+    assert result["mode"] == "search"
+    assert result["query"] == "why is JWT used for authentication"
+    assert len(result["decisions"]) >= 1
+    assert any("JWT" in d["title"] for d in result["decisions"])
+
+
+@pytest.mark.asyncio
+async def test_get_why_file_path(setup_mcp):
+    from wikicode.server.mcp_server import get_why
+
+    result = await get_why("src/auth/service.py")
+    assert result["mode"] == "path"
+    assert result["path"] == "src/auth/service.py"
+    assert len(result["decisions"]) >= 1
+    assert any(d["title"] == "Use JWT for authentication" for d in result["decisions"])
+
+
+@pytest.mark.asyncio
+async def test_get_why_no_args(setup_mcp):
+    from wikicode.server.mcp_server import get_why
+
+    result = await get_why()
+    assert result["mode"] == "health"
+    assert "summary" in result
+    assert "counts" in result
+    assert "proposed_awaiting_review" in result
+    assert "ungoverned_hotspots" in result
+
+
+@pytest.mark.asyncio
+async def test_get_why_module_path(setup_mcp):
+    from wikicode.server.mcp_server import get_why
+
+    result = await get_why("src/db")
+    assert result["mode"] == "path"
+    assert len(result["decisions"]) >= 1
+    assert any(d["title"] == "SQLAlchemy as ORM" for d in result["decisions"])
 
 
 # ---- Tool 5: search_codebase ----
@@ -709,133 +865,7 @@ async def test_get_dependency_path_node_not_found(setup_mcp):
     assert "error" in result
 
 
-# ---- Tool 8: get_stale_pages ----
-
-
-@pytest.mark.asyncio
-async def test_get_stale_pages(setup_mcp):
-    from wikicode.server.mcp_server import get_stale_pages
-
-    result = await get_stale_pages(threshold=0.6)
-    stale = result["stale_pages"]
-    assert len(stale) == 2  # middleware (0.50) and models (0.40)
-    # Should be sorted by confidence ASC
-    assert stale[0]["confidence_score"] <= stale[1]["confidence_score"]
-
-
-@pytest.mark.asyncio
-async def test_get_stale_pages_high_threshold(setup_mcp):
-    from wikicode.server.mcp_server import get_stale_pages
-
-    result = await get_stale_pages(threshold=0.9)
-    stale = result["stale_pages"]
-    assert len(stale) >= 3  # middleware, models, service all below 0.9
-
-
-# ---- Tool 9: get_file_history ----
-
-
-@pytest.mark.asyncio
-async def test_get_file_history(setup_mcp):
-    from wikicode.server.mcp_server import get_file_history
-
-    result = await get_file_history("src/auth/service.py")
-    assert result["file_path"] == "src/auth/service.py"
-    assert result["age_days"] == 443
-    assert result["primary_owner"]["name"] == "Alice"
-    assert result["primary_owner"]["pct"] == 0.65
-    assert result["is_hotspot"] is True
-    assert result["is_stable"] is False
-    assert result["commit_count_total"] == 42
-    assert result["commit_count_90d"] == 8
-    assert len(result["significant_commits"]) == 2
-    assert len(result["co_change_partners"]) == 2
-
-
-@pytest.mark.asyncio
-async def test_get_file_history_not_found(setup_mcp):
-    from wikicode.server.mcp_server import get_file_history
-
-    result = await get_file_history("nonexistent.py")
-    assert "error" in result
-
-
-# ---- Tool 10: get_hotspots ----
-
-
-@pytest.mark.asyncio
-async def test_get_hotspots(setup_mcp):
-    from wikicode.server.mcp_server import get_hotspots
-
-    result = await get_hotspots()
-    assert len(result["hotspots"]) == 1
-    assert result["hotspots"][0]["file_path"] == "src/auth/service.py"
-    assert result["hotspots"][0]["churn_percentile"] == 0.92
-    assert "stable_files" not in result
-
-
-@pytest.mark.asyncio
-async def test_get_hotspots_include_stable(setup_mcp):
-    from wikicode.server.mcp_server import get_hotspots
-
-    result = await get_hotspots(include_stable=True)
-    assert "stable_files" in result
-    assert len(result["stable_files"]) == 1
-    assert result["stable_files"][0]["file_path"] == "src/db/models.py"
-
-
-# ---- Tool 11: get_codebase_ownership ----
-
-
-@pytest.mark.asyncio
-async def test_get_codebase_ownership_by_module(setup_mcp):
-    from wikicode.server.mcp_server import get_codebase_ownership
-
-    result = await get_codebase_ownership(by="module")
-    assert "by_module" in result
-    modules = result["by_module"]
-    # Both files are under src/, so grouped as one module "src"
-    assert len(modules) == 1
-    assert modules[0]["module_path"] == "src"
-    assert modules[0]["contributor_count"] == 2
-
-
-@pytest.mark.asyncio
-async def test_get_codebase_ownership_by_file(setup_mcp):
-    from wikicode.server.mcp_server import get_codebase_ownership
-
-    result = await get_codebase_ownership(by="file")
-    assert "by_file" in result
-    assert len(result["by_file"]) == 2  # Only files with git metadata
-
-
-# ---- Tool 12: get_co_changes ----
-
-
-@pytest.mark.asyncio
-async def test_get_co_changes(setup_mcp):
-    from wikicode.server.mcp_server import get_co_changes
-
-    result = await get_co_changes("src/auth/service.py", min_count=3)
-    assert result["file_path"] == "src/auth/service.py"
-    partners = result["co_change_partners"]
-    assert len(partners) == 2
-    # Check enrichment
-    middleware_partner = next(p for p in partners if p["file_path"] == "src/auth/middleware.py")
-    assert middleware_partner["co_change_count"] == 5
-    assert middleware_partner["has_import_relationship"] is True  # edge exists
-    assert middleware_partner["wiki_page_snippet"] is not None
-
-
-@pytest.mark.asyncio
-async def test_get_co_changes_not_found(setup_mcp):
-    from wikicode.server.mcp_server import get_co_changes
-
-    result = await get_co_changes("nonexistent.py")
-    assert "error" in result
-
-
-# ---- Tool 13: get_dead_code ----
+# ---- Tool 8: get_dead_code ----
 
 
 @pytest.mark.asyncio

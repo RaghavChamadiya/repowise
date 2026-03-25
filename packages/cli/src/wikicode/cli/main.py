@@ -11,6 +11,7 @@ from wikicode.cli.commands.doctor_cmd import doctor_command
 from wikicode.cli.commands.export_cmd import export_command
 from wikicode.cli.commands.init_cmd import init_command
 from wikicode.cli.commands.mcp_cmd import mcp_command
+from wikicode.cli.commands.reindex_cmd import reindex_command
 from wikicode.cli.commands.search_cmd import search_command
 from wikicode.cli.commands.serve_cmd import serve_command
 from wikicode.cli.commands.status_cmd import status_command
@@ -35,3 +36,4 @@ cli.add_command(doctor_command)
 cli.add_command(watch_command)
 cli.add_command(serve_command)
 cli.add_command(mcp_command)
+cli.add_command(reindex_command)

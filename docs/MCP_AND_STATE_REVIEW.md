@@ -72,27 +72,24 @@ server process.
 
 ## 2. MCP Tools Inventory
 
-The server implements **16 tools**, though documentation in multiple places
-incorrectly states 13. The 3 decision intelligence tools were added later.
+The server implements **8 tools** (consolidated from 16 on 2026-03-25 to reduce
+sequential tool calls for common tasks).
 
 | # | Tool | Category | What It Answers |
 |---|------|----------|----------------|
 | 1 | `get_overview` | Navigation | Architecture summary, module map, entry points |
-| 2 | `get_module_docs` | Navigation | Wiki page for a package/directory |
-| 3 | `get_file_docs` | Navigation | Wiki page for a specific file with symbols |
-| 4 | `get_symbol` | Lookup | Any function/class/method by name (fuzzy match) |
+| 2 | `get_context(targets, include?)` | Context | Docs, ownership, history, decisions, freshness for files/modules/symbols. Multi-target, single call. |
+| 3 | `get_risk(targets)` | Risk | Hotspot score, dependents, co-change partners, risk summary. Multi-target, single call. |
+| 4 | `get_why(query?)` | Decision Intelligence | 3 modes: NL search, path-based decisions, no-arg health dashboard |
 | 5 | `search_codebase` | Search | Semantic search over full wiki (natural language) |
-| 6 | `get_architecture_diagram` | Visualization | Mermaid diagram for repo/module/file |
-| 7 | `get_dependency_path` | Graph | How two files/modules are connected |
-| 8 | `get_stale_pages` | Quality | Pages with confidence below threshold |
-| 9 | `get_file_history` | Git Intelligence | Git history, ownership, significant commits |
-| 10 | `get_hotspots` | Git Intelligence | High-churn + high-complexity files |
-| 11 | `get_codebase_ownership` | Git Intelligence | Ownership breakdown, knowledge silos |
-| 12 | `get_co_changes` | Git Intelligence | Files that change together (hidden coupling) |
-| 13 | `get_dead_code` | Analysis | Dead/unused code findings |
-| 14 | `get_decisions` | Decision Intelligence | Architectural decision records |
-| 15 | `get_why` | Decision Intelligence | "Why is X built this way?" queries |
-| 16 | `get_decision_health` | Decision Intelligence | Stale decisions, ungoverned hotspots |
+| 6 | `get_dependency_path` | Graph | How two files/modules are connected |
+| 7 | `get_dead_code` | Analysis | Dead/unused code findings |
+| 8 | `get_architecture_diagram` | Visualization | Mermaid diagram for repo/module/file |
+
+**Consolidation mapping** (old → new):
+- `get_module_docs`, `get_file_docs`, `get_symbol`, `get_file_history`, `get_codebase_ownership` (partial), `get_stale_pages` → **`get_context`**
+- `get_hotspots`, `get_co_changes`, `get_codebase_ownership` (partial) → **`get_risk`**
+- `get_decisions`, old `get_why`, `get_decision_health` → **`get_why`** (3-mode)
 
 ### Tool Design Patterns
 
@@ -276,9 +273,27 @@ This is genuinely useful documentation that would take a human engineer signific
 
 ## 7. MCP Tool-by-Tool Assessment (Live Test Results)
 
-All 16 tools were tested live against the interview-coach wiki database on 2026-03-25.
+All tools were tested live against the interview-coach wiki database on 2026-03-25
+(originally 16 tools; consolidated to 8 tools on 2026-03-25).
 
 ### Result Summary
+
+| # | Tool | Status | Verdict |
+|---|------|--------|---------|
+**Post-consolidation (8 tools, tested 2026-03-25):**
+
+| # | Tool | Status | Verdict |
+|---|------|--------|---------|
+| 1 | `get_overview` | **PASS** | Rich response: overview, 6 modules, 45 entry points |
+| 2 | `get_context` | **PASS** | Multi-target (file+module+symbol) resolved in one call. Docs, ownership, decisions, freshness all returned. |
+| 3 | `get_risk` | **PASS** | DSAPatternTable at 100% hotspot, 43 co-change partners, 26 dependents. Global hotspots exclude targets. |
+| 4 | `get_why` (3 modes) | **PASS** | Search mode finds keyword-matched decisions; path mode returns governing decisions; health mode shows dashboard |
+| 5 | `search_codebase` | **PASS** | Semantic search via LanceDB + Gemini. "payment system" → payment_service.py (score 6.72). FTS fallback also works. |
+| 6 | `get_dependency_path` | **PASS** | Correctly finds 1-hop path tiro_router → tiro/service |
+| 7 | `get_dead_code` | **PASS** | 1,232 findings, 48,780 deletable lines, sorted by confidence desc |
+| 8 | `get_architecture_diagram` | **PASS** | Repo scope returns pre-gen Mermaid; module scope generates dynamic |
+
+**Original 16-tool results (pre-consolidation, for reference):**
 
 | # | Tool | Status | Verdict |
 |---|------|--------|---------|
@@ -286,18 +301,18 @@ All 16 tools were tested live against the interview-coach wiki database on 2026-
 | 2 | `get_module_docs` | **PASS** | Returns full module page + 200+ child file listings |
 | 3 | `get_file_docs` | **PASS** | Returns page content, 11 symbols, 3 importers, confidence 1.0 |
 | 4 | `get_symbol` | **PASS** | Exact match works, returns `candidates` array for disambiguation |
-| 5 | `search_codebase` | **FAIL** | Returns `{"results": []}` for all queries |
+| 5 | `search_codebase` | **PASS** (was FAIL) | Fixed: FTS fallback + LanceDB + stop word stripping |
 | 6 | `get_architecture_diagram` | **PASS** | Repo scope returns pre-gen Mermaid; module scope generates dynamic |
 | 7 | `get_dependency_path` | **PASS** | Correctly finds 1-hop path tiro_router → tiro/service |
-| 8 | `get_stale_pages` | **PASS** | Empty (all pages fresh at 1.0) — correct behavior |
-| 9 | `get_file_history` | **PARTIAL** | Ownership, hotspot, commits work; co_change counts all 0 |
-| 10 | `get_hotspots` | **PASS** | Returns top 5 hotspots with churn percentiles + stable files |
-| 11 | `get_codebase_ownership` | **PASS** | Correctly identifies 3 knowledge silos (blogs, hire-backend, hire-frontend) |
-| 12 | `get_co_changes` | **FAIL** | Returns `{"co_change_partners": []}` — data not persisted correctly |
-| 13 | `get_dead_code` | **PASS** | Summary correct; default min_confidence filters out zombies (see note) |
-| 14 | `get_decisions` | **PASS** | Returns all 23 proposed decisions with full context |
-| 15 | `get_why` | **FAIL** | Returns empty for "why is pipecat used for interviews" |
-| 16 | `get_decision_health` | **PASS** | Shows 0 active, 23 proposed, 505 ungoverned hotspots |
+| 8 | `get_stale_pages` | **PASS** | Empty (all pages fresh at 1.0) — correct behavior. Now part of `get_context` freshness. |
+| 9 | `get_file_history` | **PARTIAL** | Ownership, hotspot, commits work; co_change counts all 0 (fixed via key mismatch fix) |
+| 10 | `get_hotspots` | **PASS** | Returns top 5 hotspots with churn percentiles + stable files. Now part of `get_risk`. |
+| 11 | `get_codebase_ownership` | **PASS** | Correctly identifies 3 knowledge silos. Now part of `get_context`/`get_risk`. |
+| 12 | `get_co_changes` | **PASS** (was FAIL) | Fixed via co_change_count key mismatch fix (M10). Now part of `get_risk`. |
+| 13 | `get_dead_code` | **PASS** | Summary correct; default min_confidence lowered to 0.5. |
+| 14 | `get_decisions` | **PASS** | Returns all 23 proposed decisions with full context. Now part of `get_why`. |
+| 15 | `get_why` | **PASS** (was FAIL) | Fixed: include_proposed=True + real embedder + FTS fallback. Now 3-mode tool. |
+| 16 | `get_decision_health` | **PASS** | Shows 0 active, 23 proposed, 505 ungoverned hotspots. Now `get_why()` no-arg mode. |
 
 ### Detailed Test Results
 
@@ -356,21 +371,24 @@ symbols share a name is very useful for AI assistants.
 
 ---
 
-#### Tool 5: `search_codebase` — FAIL
+#### Tool 5: `search_codebase` — PASS (after fixes)
 
 **Test:** `search_codebase("how does the payment system work")`
-**Result:** `{"results": []}` — completely empty
+**Result (after fix):** 5 results, topped by `backend/services/payment_service.py` (score 6.72)
 
-**Root cause (confirmed by live test):** Two cascading failures:
-1. `MockEmbedder` produces zero-dimension or random vectors → semantic search returns nothing
-2. FTS fallback also returns empty — the FTS index may not contain this query's terms,
-   or the exception path in the fallback is swallowing errors silently
+**Original failures and fixes (2026-03-25):**
+1. `MockEmbedder` produced random vectors → Fixed by `_resolve_embedder()` reading config.yaml
+2. FTS fallback never triggered (vector store returned empty list, not exception) → Fixed: now
+   falls back to FTS when vector results are empty
+3. FTS used exact phrase match for multi-word queries → Fixed: `_build_fts5_query()` strips
+   stop words and joins terms with OR + prefix matching
+4. No LanceDB directory existed (init never persisted embeddings) → Fixed: `init_cmd.py` now
+   tries LanceDB before InMemoryVectorStore; added `wikicode reindex` command to embed
+   existing pages without re-generating
+5. `lancedb` package not installed → Installed; 721 pages + 23 decisions indexed via Gemini embedder
 
-**Impact:** HIGH — this is the primary natural-language search tool. Without it,
-AI assistants must know exact file/symbol names instead of asking conceptual questions.
-
-**Fix needed:** Resolve real embedder from `.wikicode/config.yaml`. Additionally,
-the FTS fallback should be verified independently.
+**Current status:** Semantic search via LanceDB + Gemini embeddings fully operational.
+FTS fallback also works for environments without LanceDB.
 
 ---
 
@@ -490,25 +508,20 @@ useful architectural context.
 
 ---
 
-#### Tool 15: `get_why` — FAIL
+#### Tool 15 (now part of `get_why`): `get_why` — PASS (after fixes)
 
-**Test:** `query="why is pipecat used for interviews"`
-**Result:** `{"query": "...", "decisions": [], "related_documentation": []}` — all empty
+**Original failure:** `include_proposed=False` excluded all 23 decisions; MockEmbedder
+returned nothing; FTS fallback never triggered.
 
-**Root causes (multiple):**
-1. **Keyword search excludes proposed decisions:** `_list_decisions(..., include_proposed=False)`
-   returns 0 results because ALL 23 decisions are "proposed". The keyword matching
-   has no data to search over.
-2. **Semantic search uses MockEmbedder:** Both `_decision_store.search()` and
-   `_vector_store.search()` return nothing due to mock embedder.
-3. **FTS fallback also empty:** Same issue as Tool 5.
+**Fixes applied (2026-03-25):**
+- Changed to `include_proposed=True` so keyword search finds proposed decisions
+- Real embedder (Gemini) now used; LanceDB decision_records table populated via `wikicode reindex`
+- FTS fallback improved (stop word stripping, OR-based matching)
 
-**Impact:** HIGH — this is the flagship "why" tool. It should be the most valuable
-tool for preventing re-introduction of solved problems, but it returns nothing.
-
-**Fix needed:**
-- Change `include_proposed=False` to `include_proposed=True` in `get_why`
-- Fix the MockEmbedder issue (same as Tool 5)
+**Current status (consolidated `get_why` tool — 3 modes):**
+- `get_why("why is JWT used")` → mode="search", returns keyword-matched decisions. **PASS**
+- `get_why("src/auth/service.py")` → mode="path", returns decisions governing that file. **PASS**
+- `get_why()` → mode="health", returns dashboard with 23 proposed, 505 ungoverned. **PASS**
 
 ---
 
@@ -533,7 +546,7 @@ files that are actively being changed but have no documented architectural decis
 |---|-------|----------|-------------|
 | C1 | **DB filename mismatch** (FIXED) | `mcp_server.py:64` | MCP server looked for `.wikicode/wikicode.db` but CLI creates `.wikicode/wiki.db`. Fixed 2026-03-25: changed to `wiki.db`. |
 | C2 | **LanceDB filter injection** (FIXED) | `vector_store.py:240,274` | `f"page_id = '{page_id}'"` — string interpolation in LanceDB delete filter. Fixed 2026-03-25: single quotes in page_id are now escaped before interpolation. |
-| C3 | **Tool count mismatch in docs** (FIXED) | Multiple files | Updated "13 tools" → "16 tools" in mcp_server.py, mcp_cmd.py, ARCHITECTURE.md, server README, cli README, test_mcp.py. Added 3 decision tools to server README tool table. |
+| C3 | **Tool count mismatch in docs** (FIXED) | Multiple files | Updated "13 tools" → "16 tools" → "8 tools" (after consolidation) in mcp_server.py, ARCHITECTURE.md, server README. |
 
 ### MAJOR (significant impact)
 
@@ -547,7 +560,7 @@ files that are actively being changed but have no documented architectural decis
 | M6 | ~~`get_repo_structure()` arg mismatch~~ (NOT A BUG) | `update_cmd.py:97` | The `files` parameter is optional (`files: list[FileInfo] | None = None`). Calling without args triggers a fresh traversal. |
 | M7 | `wikicode-server` not auto-installed | `Makefile` / README | Running `wikicode mcp` fails with `ModuleNotFoundError` unless server package is explicitly installed. Not documented. |
 | M8 | `completed_pages > total_pages` | `job_system.py` | Multiple jobs show completed exceeding total. The total estimate is not updated as levels are processed. |
-| M9 | **`search_codebase` returns empty** (FIXED) | `mcp_server.py:82,469-473` | Fixed by M1 — real embedder now used. FTS fallback also functional. |
+| M9 | **`search_codebase` returns empty** (FIXED) | `mcp_server.py`, `search.py`, `init_cmd.py` | Fixed: (a) FTS fallback triggers on empty results not just exceptions, (b) FTS query builder strips stop words and uses OR + prefix matching, (c) `init_cmd.py` now uses LanceDB when available, (d) added `wikicode reindex` command. LanceDB indexed with 721 pages + 23 decisions via Gemini embedder. |
 | M10 | **Co-change counts all zero** (FIXED) | `mcp_server.py` | Root cause: key mismatch — data stores `"co_change_count"` but MCP tools read `"count"`. Fixed 2026-03-25: tools now check both keys via `p.get("co_change_count", p.get("count", 0))`. |
 | M11 | **`get_why` excludes all decisions** (FIXED) | `mcp_server.py:1155-1156` | `include_proposed=False` returned 0 results. Fixed 2026-03-25: changed to `include_proposed=True`. |
 
@@ -564,7 +577,7 @@ files that are actively being changed but have no documented architectural decis
 | m7 | Ownership grouping too coarse | `mcp_server.py:858` | Groups by first directory only — too coarse for nested monorepos. |
 | m8 | Architecture diagram edge limit | `mcp_server.py:561` | Dynamic diagrams capped at 50 edges with no prioritization strategy. |
 | m9 | All decisions are "proposed" | DB content | No inline markers found — all 23 are auto-extracted. Expected but worth noting. |
-| m10 | `_decision_store` may be empty InMemory | `mcp_server.py:103-104` | Falls back to empty `InMemoryVectorStore` when no LanceDB decision table exists. |
+| m10 | **`_decision_store` may be empty InMemory** (FIXED) | `mcp_server.py:103-104` | Fixed: `wikicode reindex` now indexes 23 decision records into LanceDB `decision_records` table. MCP server loads this on startup when `.wikicode/lancedb/` exists. |
 | m11 | **`get_dead_code` default hides zombies** (FIXED) | `mcp_server.py:982` | Default `min_confidence` was 0.6, hiding 0.5-confidence zombie findings. Fixed 2026-03-25: lowered default to 0.5. |
 | m12 | `wikicode-server` not installed by default | `Makefile` / setup | Running `wikicode mcp` fails with `ModuleNotFoundError` unless server package is explicitly installed. Not documented in quick-start. |
 
