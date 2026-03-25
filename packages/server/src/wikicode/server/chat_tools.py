@@ -66,7 +66,7 @@ _TOOL_SCHEMAS: list[dict[str, Any]] = [
     },
     {
         "name": "get_risk",
-        "description": "Assess modification risk for files: hotspot score, dependents, co-change partners, ownership.",
+        "description": "Assess modification risk with trend analysis: hotspot score + velocity (increasing/stable/decreasing), risk type (churn-heavy/bug-prone/high-coupling), impact surface (top 3 modules that would break), dependents, co-change partners, ownership.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -83,11 +83,16 @@ _TOOL_SCHEMAS: list[dict[str, Any]] = [
     },
     {
         "name": "get_why",
-        "description": "Query architectural decisions: health dashboard (no query), path-based lookup, or natural language search.",
+        "description": "Intent archaeology: understand why code was built a certain way. Path lookup returns origin story (who, when, key commits linked to decisions) and alignment score. Natural language search scores across all decision fields. Use targets to anchor search to specific files.",
         "parameters": {
             "type": "object",
             "properties": {
                 "query": {"type": "string", "description": "Natural language question, file/module path, or omit for health dashboard."},
+                "targets": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "File paths to anchor the search. Decisions governing these files are prioritized.",
+                },
                 "repo": {"type": "string", "description": "Repository identifier."},
             },
             "required": [],
@@ -125,7 +130,7 @@ _TOOL_SCHEMAS: list[dict[str, Any]] = [
     },
     {
         "name": "get_dead_code",
-        "description": "List dead code findings: unreachable files, unused exports, zombie packages.",
+        "description": "Get a tiered refactor plan for dead code. Returns findings in high/medium/low confidence tiers with per-directory rollups, ownership hotspots, and impact estimates. Use group_by for rollup views, tier to focus on one band.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -133,7 +138,11 @@ _TOOL_SCHEMAS: list[dict[str, Any]] = [
                 "kind": {"type": "string", "description": "Filter: unreachable_file, unused_export, unused_internal, zombie_package."},
                 "min_confidence": {"type": "number", "description": "Minimum confidence threshold (default 0.5).", "default": 0.5},
                 "safe_only": {"type": "boolean", "description": "Only return safe-to-delete findings.", "default": False},
-                "limit": {"type": "integer", "description": "Max findings (default 20).", "default": 20},
+                "limit": {"type": "integer", "description": "Max findings per tier (default 20).", "default": 20},
+                "tier": {"type": "string", "description": "Focus on one tier: high (>=0.8), medium (0.5-0.8), or low (<0.5)."},
+                "directory": {"type": "string", "description": "Filter to a directory prefix (e.g. src/legacy)."},
+                "owner": {"type": "string", "description": "Filter by primary owner name."},
+                "group_by": {"type": "string", "description": "Rollup view: 'directory' or 'owner'."},
             },
             "required": [],
         },

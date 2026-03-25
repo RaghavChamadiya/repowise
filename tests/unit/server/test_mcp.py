@@ -700,6 +700,21 @@ async def test_get_risk_single_target(setup_mcp):
     assert "risk_summary" in t
     assert "hotspot score" in t["risk_summary"]
 
+    # Trend: 30d=3, 90d=8 → baseline_rate=0.083, recent=0.1 → stable
+    assert t["trend"] in ("increasing", "stable", "decreasing")
+
+    # Risk type: churn_percentile=0.92, no fix keywords → churn-heavy
+    assert t["risk_type"] == "churn-heavy"
+
+    # Impact surface: middleware.py depends on service.py
+    assert len(t["impact_surface"]) >= 1
+    impact_files = [s["file_path"] for s in t["impact_surface"]]
+    assert "src/auth/middleware.py" in impact_files
+    # Each entry has pagerank and is_entry_point
+    for s in t["impact_surface"]:
+        assert "pagerank" in s
+        assert "is_entry_point" in s
+
 
 @pytest.mark.asyncio
 async def test_get_risk_multiple_targets(setup_mcp):
@@ -709,6 +724,10 @@ async def test_get_risk_multiple_targets(setup_mcp):
     targets = result["targets"]
     assert len(targets) == 2
     assert "global_hotspots" in result
+    # Both targets should have trend and risk_type
+    for t in targets.values():
+        assert "trend" in t
+        assert "risk_type" in t
 
 
 @pytest.mark.asyncio
@@ -728,7 +747,23 @@ async def test_get_risk_no_git_metadata(setup_mcp):
     result = await get_risk(["src/auth/middleware.py"])
     t = result["targets"]["src/auth/middleware.py"]
     assert t["hotspot_score"] == 0.0  # No git metadata for this file
+    assert t["trend"] == "unknown"
     assert "risk_summary" in t
+    # Impact surface and risk_type still computed from graph data
+    assert "risk_type" in t
+    assert "impact_surface" in t
+
+
+@pytest.mark.asyncio
+async def test_get_risk_stable_file(setup_mcp):
+    from wikicode.server.mcp_server import get_risk
+
+    result = await get_risk(["src/db/models.py"])
+    t = result["targets"]["src/db/models.py"]
+    # 0 commits in 30d and 90d → stable
+    assert t["trend"] == "stable"
+    # churn_percentile=0.15, dep_count=1, no fix keywords → stable
+    assert t["risk_type"] == "stable"
 
 
 # ---- Tool 4: get_why ----
@@ -754,6 +789,145 @@ async def test_get_why_file_path(setup_mcp):
     assert result["path"] == "src/auth/service.py"
     assert len(result["decisions"]) >= 1
     assert any(d["title"] == "Use JWT for authentication" for d in result["decisions"])
+
+    # Origin story
+    origin = result["origin_story"]
+    assert origin["available"] is True
+    assert origin["primary_author"] == "Alice"
+    assert origin["total_commits"] == 42
+    assert len(origin["key_commits"]) >= 1
+    assert len(origin["contributors"]) >= 1
+    assert "Alice" in origin["summary"]
+
+    # Alignment — dec1 is "proposed", both service.py and middleware.py share it
+    alignment = result["alignment"]
+    assert alignment["score"] in ("high", "medium", "low", "none")
+    assert alignment["governing_count"] >= 1
+    assert "explanation" in alignment
+
+
+@pytest.mark.asyncio
+async def test_get_why_file_path_commit_decision_linkage(setup_mcp):
+    from wikicode.server.mcp_server import get_why
+
+    result = await get_why("src/auth/service.py")
+    origin = result["origin_story"]
+
+    # "Add JWT support" commit should link to "Use JWT for authentication" decision
+    # because "JWT" appears in both the commit message and decision title
+    linked = origin["linked_decisions"]
+    assert len(linked) >= 1
+    jwt_decision = next((d for d in linked if d["title"] == "Use JWT for authentication"), None)
+    assert jwt_decision is not None
+    assert len(jwt_decision["evidence_commits"]) >= 1
+    ec = jwt_decision["evidence_commits"][0]
+    assert "JWT" in ec["message"] or "jwt" in ec["message"].lower()
+    assert "matching_keywords" in ec
+
+
+@pytest.mark.asyncio
+async def test_get_why_natural_language_with_targets(setup_mcp):
+    from wikicode.server.mcp_server import get_why
+
+    # Search with targets — decisions governing service.py should be boosted
+    result = await get_why(
+        "authentication approach",
+        targets=["src/auth/service.py"],
+    )
+    assert result["mode"] == "search"
+    assert len(result["decisions"]) >= 1
+
+    # target_context should be present
+    assert "target_context" in result
+    ctx = result["target_context"]["src/auth/service.py"]
+    assert len(ctx["governing_decisions"]) >= 1
+    assert ctx["origin"]["available"] is True
+    assert ctx["origin"]["primary_author"] == "Alice"
+
+
+@pytest.mark.asyncio
+async def test_get_why_expanded_keyword_search(setup_mcp):
+    from wikicode.server.mcp_server import get_why
+
+    # Search for "security" — should match via tags_json on dec1
+    result = await get_why("security")
+    assert result["mode"] == "search"
+    # dec1 has tags=["auth", "security"], should be found
+    assert len(result["decisions"]) >= 1
+    assert any(d.get("title") == "Use JWT for authentication" for d in result["decisions"])
+
+
+@pytest.mark.asyncio
+async def test_get_why_file_no_git_metadata(setup_mcp):
+    from wikicode.server.mcp_server import get_why
+
+    # middleware.py has no GitMetadata in the fixture
+    result = await get_why("src/auth/middleware.py")
+    assert result["mode"] == "path"
+    origin = result["origin_story"]
+    assert origin["available"] is False
+    assert "No git history" in origin["summary"]
+
+    # But it still has decisions (dec1 affects middleware.py)
+    assert len(result["decisions"]) >= 1
+    alignment = result["alignment"]
+    assert alignment["governing_count"] >= 1
+
+
+@pytest.mark.asyncio
+async def test_get_why_file_ungoverned(setup_mcp):
+    from wikicode.server.mcp_server import get_why
+
+    # Use a path that has no decisions — triggers git archaeology fallback
+    result = await get_why("src/other/utils.py")
+    assert result["mode"] == "path"
+    assert result["alignment"]["score"] == "none"
+    assert "ungoverned" in result["alignment"]["explanation"]
+
+    # Git archaeology fallback should be triggered
+    assert "git_archaeology" in result
+    arch = result["git_archaeology"]
+    assert arch["triggered"] is True
+    assert "summary" in arch
+    assert "file_commits" in arch
+    assert "cross_references" in arch
+    assert "git_log" in arch
+
+
+@pytest.mark.asyncio
+async def test_get_why_fallback_with_cross_references(setup_mcp):
+    from wikicode.server.mcp_server import get_why
+
+    # src/auth/service.py has git metadata with commits mentioning "auth"
+    # Query a nonexistent auth file — cross-references should find commits
+    # from service.py that mention "auth" terms
+    result = await get_why("src/auth/new_handler.py")
+    assert result["mode"] == "path"
+    assert len(result["decisions"]) == 0  # No decisions for this file
+
+    arch = result["git_archaeology"]
+    assert arch["triggered"] is True
+    # Cross-references may find commits from service.py whose messages
+    # contain "auth" (matching the path stem "new_handler" won't match,
+    # but the file_commits will still be empty since no git metadata exists)
+    assert isinstance(arch["cross_references"], list)
+
+
+@pytest.mark.asyncio
+async def test_get_why_targets_fallback(setup_mcp):
+    from wikicode.server.mcp_server import get_why
+
+    # Search with a target that has no governing decisions
+    result = await get_why(
+        "why does this exist",
+        targets=["src/other/unknown.py"],
+    )
+    assert result["mode"] == "search"
+    ctx = result["target_context"]["src/other/unknown.py"]
+    assert len(ctx["governing_decisions"]) == 0
+    # Fallback should trigger
+    assert "git_archaeology" in ctx
+    assert ctx["git_archaeology"]["triggered"] is True
 
 
 @pytest.mark.asyncio
@@ -896,10 +1070,19 @@ async def test_get_dead_code(setup_mcp):
     result = await get_dead_code()
     assert result["summary"]["total_findings"] == 3
     assert result["summary"]["safe_to_delete_count"] == 2
-    # Default min_confidence=0.5, so all findings at >= 0.5 are included
-    findings = result["findings"]
-    assert len(findings) == 3
-    assert findings[0]["confidence"] >= findings[1]["confidence"]  # sorted desc
+
+    # Tiered structure: dc1 (0.9) in high, dc2 (0.7) + dc3 (0.5) in medium
+    tiers = result["tiers"]
+    assert tiers["high"]["count"] == 1
+    assert tiers["medium"]["count"] == 2
+    assert tiers["low"]["count"] == 0
+
+    # High tier findings sorted by confidence desc
+    high_findings = tiers["high"]["findings"]
+    assert high_findings[0]["confidence"] >= 0.8
+
+    # Impact estimate present
+    assert result["impact"]["total_lines_reclaimable"] > 0
 
 
 @pytest.mark.asyncio
@@ -907,8 +1090,9 @@ async def test_get_dead_code_safe_only(setup_mcp):
     from wikicode.server.mcp_server import get_dead_code
 
     result = await get_dead_code(safe_only=True)
-    for f in result["findings"]:
-        assert f["safe_to_delete"] is True
+    for tier_data in result["tiers"].values():
+        for f in tier_data["findings"]:
+            assert f["safe_to_delete"] is True
 
 
 @pytest.mark.asyncio
@@ -916,8 +1100,9 @@ async def test_get_dead_code_by_kind(setup_mcp):
     from wikicode.server.mcp_server import get_dead_code
 
     result = await get_dead_code(kind="unreachable_file", min_confidence=0.0)
-    for f in result["findings"]:
-        assert f["kind"] == "unreachable_file"
+    for tier_data in result["tiers"].values():
+        for f in tier_data["findings"]:
+            assert f["kind"] == "unreachable_file"
 
 
 @pytest.mark.asyncio
@@ -925,7 +1110,46 @@ async def test_get_dead_code_low_confidence(setup_mcp):
     from wikicode.server.mcp_server import get_dead_code
 
     result = await get_dead_code(min_confidence=0.0)
-    assert len(result["findings"]) == 3  # All 3 findings included
+    total = sum(t["count"] for t in result["tiers"].values())
+    assert total == 3  # All 3 findings included
+
+
+@pytest.mark.asyncio
+async def test_get_dead_code_tier_filter(setup_mcp):
+    from wikicode.server.mcp_server import get_dead_code
+
+    result = await get_dead_code(tier="high")
+    assert "high" in result["tiers"]
+    assert "medium" not in result["tiers"]
+    assert "low" not in result["tiers"]
+    assert result["tiers"]["high"]["count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_get_dead_code_group_by_directory(setup_mcp):
+    from wikicode.server.mcp_server import get_dead_code
+
+    result = await get_dead_code(group_by="directory", min_confidence=0.0)
+    assert "by_directory" in result
+    dirs = result["by_directory"]
+    assert len(dirs) >= 1
+    # Each dir entry has count, lines, safe_count
+    for d in dirs:
+        assert "directory" in d
+        assert "count" in d
+        assert "lines" in d
+
+
+@pytest.mark.asyncio
+async def test_get_dead_code_group_by_owner(setup_mcp):
+    from wikicode.server.mcp_server import get_dead_code
+
+    result = await get_dead_code(group_by="owner", min_confidence=0.0)
+    assert "by_owner" in result
+    owners = result["by_owner"]
+    assert len(owners) >= 1
+    owner_names = [o["owner"] for o in owners]
+    assert "Bob" in owner_names  # Bob owns dc2 + dc3
 
 
 # ---- MCP config generation ----

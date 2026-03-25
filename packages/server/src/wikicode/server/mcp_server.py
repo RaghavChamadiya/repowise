@@ -233,6 +233,200 @@ def _is_path(query: str) -> bool:
     return ext in _CODE_EXTS
 
 
+def _build_origin_story(
+    file_path: str, git_meta: Any | None, governing_decisions: list[dict],
+) -> dict:
+    """Build the human context / origin story for a file from stored metadata."""
+    if git_meta is None:
+        return {
+            "available": False,
+            "summary": f"No git history available for {file_path}.",
+        }
+
+    authors = json.loads(git_meta.top_authors_json) if git_meta.top_authors_json else []
+    commits = json.loads(git_meta.significant_commits_json) if git_meta.significant_commits_json else []
+
+    # Find the earliest significant commit as the "creation" context
+    earliest_commit = None
+    if commits:
+        sorted_commits = sorted(commits, key=lambda c: c.get("date", ""))
+        earliest_commit = sorted_commits[0]
+
+    # Link commits to decisions via keyword overlap
+    linked_decisions = []
+    for d in governing_decisions:
+        # Build a keyword set from the decision
+        decision_text = f"{d.get('title', '')} {d.get('decision', '')} {d.get('rationale', '')}".lower()
+        decision_words = set(decision_text.split())
+        decision_words -= {"the", "a", "an", "is", "for", "to", "of", "in", "and", "or", "with"}
+
+        # Find commits whose messages overlap with this decision
+        related_commits = []
+        for c in commits:
+            msg = c.get("message", "").lower()
+            msg_words = set(msg.split())
+            msg_words -= {"the", "a", "an", "is", "for", "to", "of", "in", "and", "or", "with"}
+            overlap = decision_words & msg_words
+            # Require at least 1 meaningful word match
+            if len(overlap) >= 1:
+                related_commits.append({
+                    "sha": c.get("sha", ""),
+                    "message": c.get("message", ""),
+                    "author": c.get("author", ""),
+                    "date": c.get("date", ""),
+                    "matching_keywords": sorted(overlap)[:5],
+                })
+
+        linked_decisions.append({
+            "title": d.get("title", ""),
+            "status": d.get("status", ""),
+            "source": d.get("source", ""),
+            "rationale": d.get("rationale", ""),
+            "evidence_commits": related_commits,
+        })
+
+    # Build narrative summary
+    primary = git_meta.primary_owner_name or "unknown"
+    total = git_meta.commit_count_total or 0
+    first_date = git_meta.first_commit_at.strftime("%Y-%m-%d") if git_meta.first_commit_at else "unknown"
+    last_date = git_meta.last_commit_at.strftime("%Y-%m-%d") if git_meta.last_commit_at else "unknown"
+    age = git_meta.age_days or 0
+
+    parts = [f"Created ~{first_date}, last modified {last_date} ({age} days old)."]
+    parts.append(f"Primary author: {primary} ({total} total commits).")
+
+    if earliest_commit:
+        parts.append(
+            f"Earliest key commit: \"{earliest_commit.get('message', '')}\" "
+            f"by {earliest_commit.get('author', 'unknown')} on {earliest_commit.get('date', 'unknown')}."
+        )
+
+    if linked_decisions:
+        decision_titles = [d["title"] for d in linked_decisions[:3]]
+        parts.append(f"Governed by: {', '.join(decision_titles)}.")
+        # Highlight any commit-decision links
+        for ld in linked_decisions:
+            if ld["evidence_commits"]:
+                ec = ld["evidence_commits"][0]
+                parts.append(
+                    f"Commit \"{ec['message']}\" by {ec['author']} "
+                    f"is evidence for \"{ld['title']}\"."
+                )
+
+    contributor_count = len(authors)
+    if contributor_count > 1:
+        names = [a.get("name", "") for a in authors[:3]]
+        parts.append(f"Contributors: {', '.join(names)}.")
+
+    return {
+        "available": True,
+        "primary_author": primary,
+        "author_commit_pct": git_meta.primary_owner_commit_pct,
+        "contributors": authors[:5],
+        "total_commits": total,
+        "first_commit": first_date,
+        "last_commit": last_date,
+        "age_days": age,
+        "key_commits": commits[:5],
+        "linked_decisions": linked_decisions,
+        "summary": " ".join(parts),
+    }
+
+
+def _compute_alignment(
+    file_path: str, governing: list[dict], all_decisions: list,
+) -> dict:
+    """Compute how well a file aligns with established architectural decisions."""
+    if not governing:
+        return {
+            "score": "none",
+            "explanation": (
+                f"No architectural decisions govern {file_path}. "
+                "This file is ungoverned — it may be an outlier or simply undocumented."
+            ),
+            "governing_count": 0,
+            "active_count": 0,
+            "deprecated_count": 0,
+            "stale_count": 0,
+            "sibling_coverage": None,
+        }
+
+    # Count decision statuses
+    active = [d for d in governing if d["status"] == "active"]
+    deprecated = [d for d in governing if d["status"] in ("deprecated", "superseded")]
+    stale = [d for d in governing if d.get("staleness_score", 0) > 0.5]
+    proposed = [d for d in governing if d["status"] == "proposed"]
+
+    # Check sibling files — do neighbors share the same decisions?
+    dir_path = "/".join(file_path.split("/")[:-1])
+    sibling_decision_ids = set()
+    file_decision_titles = {d["title"] for d in governing}
+
+    for d in all_decisions:
+        affected = json.loads(d.affected_files_json)
+        affected_modules = json.loads(d.affected_modules_json)
+        for af in affected:
+            af_dir = "/".join(af.split("/")[:-1])
+            if af_dir == dir_path and af != file_path:
+                sibling_decision_ids.add(d.title)
+
+    # Overlap: how many of sibling decisions also cover this file
+    if sibling_decision_ids:
+        shared = file_decision_titles & sibling_decision_ids
+        sibling_coverage = len(shared) / len(sibling_decision_ids)
+    else:
+        sibling_coverage = None  # No siblings to compare
+
+    # Compute alignment score
+    if deprecated and not active and not proposed:
+        score = "low"
+        explanation = (
+            f"All governing decisions are deprecated/superseded. "
+            f"This file likely contains technical debt that should be migrated."
+        )
+    elif stale and len(stale) >= len(governing) / 2:
+        score = "low"
+        explanation = (
+            f"{len(stale)} of {len(governing)} governing decision(s) are stale. "
+            f"The architectural rationale may no longer apply."
+        )
+    elif active:
+        if sibling_coverage is not None and sibling_coverage >= 0.5:
+            score = "high"
+            explanation = (
+                f"Follows {len(active)} active decision(s) shared with sibling files. "
+                f"This file aligns with established patterns in {dir_path}/."
+            )
+        elif sibling_coverage is not None and sibling_coverage < 0.5:
+            score = "medium"
+            explanation = (
+                f"Has {len(active)} active decision(s) but limited overlap with "
+                f"sibling files in {dir_path}/. May use a different pattern than neighbors."
+            )
+        else:
+            score = "high"
+            explanation = f"Governed by {len(active)} active decision(s)."
+    elif proposed:
+        score = "medium"
+        explanation = (
+            f"Governed by {len(proposed)} proposed (unreviewed) decision(s). "
+            f"Patterns are established but not yet formally approved."
+        )
+    else:
+        score = "medium"
+        explanation = f"Governed by {len(governing)} decision(s) with mixed status."
+
+    return {
+        "score": score,
+        "explanation": explanation,
+        "governing_count": len(governing),
+        "active_count": len(active),
+        "deprecated_count": len(deprecated),
+        "stale_count": len(stale),
+        "sibling_coverage": round(sibling_coverage, 2) if sibling_coverage is not None else None,
+    }
+
+
 # ---------------------------------------------------------------------------
 # Tool 1: get_overview (unchanged)
 # ---------------------------------------------------------------------------
@@ -639,10 +833,14 @@ async def _assess_one_target(
     target: str,
     all_edge_map: dict[str, int],
     import_links: dict[str, set[str]],
+    reverse_deps: dict[str, set[str]],
+    node_meta: dict[str, Any],
 ) -> dict:
     """Assess risk for a single target file."""
     repo_id = repository.id
     result_data: dict[str, Any] = {"target": target}
+
+    dep_count = all_edge_map.get(target, 0)
 
     # Git metadata
     res = await session.execute(
@@ -655,15 +853,19 @@ async def _assess_one_target(
 
     if meta is None:
         result_data["hotspot_score"] = 0.0
-        result_data["dependents_count"] = all_edge_map.get(target, 0)
+        result_data["dependents_count"] = dep_count
         result_data["co_change_partners"] = []
         result_data["primary_owner"] = None
         result_data["owner_pct"] = None
+        result_data["trend"] = "unknown"
+        result_data["risk_type"] = "high-coupling" if dep_count >= 5 else "unknown"
+        result_data["impact_surface"] = _compute_impact_surface(
+            target, reverse_deps, node_meta,
+        )
         result_data["risk_summary"] = f"{target} — no git metadata available"
         return result_data
 
     hotspot_score = meta.churn_percentile or 0.0
-    dep_count = all_edge_map.get(target, 0)
 
     # Co-change partners
     partners = json.loads(meta.co_change_partners_json)
@@ -680,17 +882,112 @@ async def _assess_one_target(
     owner = meta.primary_owner_name or "unknown"
     pct = meta.primary_owner_commit_pct or 0.0
 
+    # --- Risk velocity (trend) ---
+    trend = _compute_trend(meta)
+
+    # --- Risk type classification ---
+    risk_type = _classify_risk_type(meta, dep_count)
+
+    # --- Impact surface ---
+    impact_surface = _compute_impact_surface(target, reverse_deps, node_meta)
+
     result_data["hotspot_score"] = hotspot_score
     result_data["dependents_count"] = dep_count
     result_data["co_change_partners"] = co_changes
     result_data["primary_owner"] = owner
     result_data["owner_pct"] = pct
+    result_data["trend"] = trend
+    result_data["risk_type"] = risk_type
+    result_data["impact_surface"] = impact_surface
     result_data["risk_summary"] = (
-        f"{target} — hotspot score {hotspot_score:.0%}, {dep_count} dependents, "
+        f"{target} — hotspot score {hotspot_score:.0%} ({trend}), "
+        f"{dep_count} dependents, {risk_type}, "
         f"{len(co_changes)} co-change partners, owned {pct:.0%} by {owner}"
     )
 
     return result_data
+
+
+_FIX_PATTERN = re.compile(
+    r"\b(fix|bug|patch|hotfix|revert|regression|broken|crash|error)\b",
+    re.IGNORECASE,
+)
+
+
+def _compute_trend(meta: Any) -> str:
+    """Compute risk velocity from 30d vs 90d commit rates."""
+    c30 = meta.commit_count_30d or 0
+    c90 = meta.commit_count_90d or 0
+    # Baseline: commits in the 60-day window before the last 30 days
+    baseline_commits = c90 - c30
+    recent_rate = c30 / 30.0
+    baseline_rate = baseline_commits / 60.0
+
+    if c90 == 0:
+        return "stable"
+    if baseline_rate == 0:
+        return "increasing" if c30 > 0 else "stable"
+    ratio = recent_rate / baseline_rate
+    if ratio > 1.5:
+        return "increasing"
+    elif ratio < 0.5:
+        return "decreasing"
+    return "stable"
+
+
+def _classify_risk_type(meta: Any, dep_count: int) -> str:
+    """Classify risk as churn-heavy, bug-prone, or high-coupling."""
+    # Count bug-fix commits from significant_commits messages
+    commits = json.loads(meta.significant_commits_json) if meta.significant_commits_json else []
+    fix_count = sum(
+        1 for c in commits
+        if _FIX_PATTERN.search(c.get("message", ""))
+    )
+
+    churn_score = meta.churn_percentile or 0.0
+
+    # Bug-prone takes priority if fix ratio is high
+    if commits and fix_count / len(commits) >= 0.4:
+        return "bug-prone"
+    if churn_score >= 0.7:
+        return "churn-heavy"
+    if dep_count >= 5:
+        return "high-coupling"
+    return "stable"
+
+
+def _compute_impact_surface(
+    target: str,
+    reverse_deps: dict[str, set[str]],
+    node_meta: dict[str, Any],
+) -> list[dict]:
+    """Find the top 3 most critical modules that depend on this file."""
+    # BFS up to 2 hops through reverse dependencies
+    visited: set[str] = set()
+    frontier = {target}
+    for _ in range(2):
+        next_frontier: set[str] = set()
+        for node in frontier:
+            for dep in reverse_deps.get(node, set()):
+                if dep != target and dep not in visited:
+                    visited.add(dep)
+                    next_frontier.add(dep)
+        frontier = next_frontier
+
+    if not visited:
+        return []
+
+    # Rank by pagerank (most critical first)
+    ranked = []
+    for dep in visited:
+        meta = node_meta.get(dep)
+        ranked.append({
+            "file_path": dep,
+            "pagerank": meta.pagerank if meta else 0.0,
+            "is_entry_point": meta.is_entry_point if meta else False,
+        })
+    ranked.sort(key=lambda x: -x["pagerank"])
+    return ranked[:3]
 
 
 @mcp.tool()
@@ -700,9 +997,13 @@ async def get_risk(
 ) -> dict:
     """Assess modification risk for one or more files before making changes.
 
-    Pass ALL files you plan to modify in a single call. Returns hotspot
-    score, dependents, co-change partners, and a plain-English risk summary
-    for each target, plus the top 5 global hotspots for ambient awareness.
+    Pass ALL files you plan to modify in a single call. Returns per-file:
+    - hotspot_score and trend ("increasing"/"stable"/"decreasing")
+    - risk_type ("churn-heavy"/"bug-prone"/"high-coupling"/"stable")
+    - impact_surface: top 3 critical modules that would break
+    - dependents, co-change partners, ownership
+
+    Plus the top 5 global hotspots for ambient awareness.
 
     Example: get_risk(["src/auth/service.py", "src/auth/middleware.py"])
 
@@ -714,7 +1015,7 @@ async def get_risk(
         repository = await _get_repo(session, repo)
         repo_id = repository.id
 
-        # Pre-load edge counts (dependents = incoming edges)
+        # Pre-load edges
         res = await session.execute(
             select(GraphEdge).where(
                 GraphEdge.repository_id == repo_id,
@@ -723,14 +1024,25 @@ async def get_risk(
         all_edges = res.scalars().all()
         dep_counts: dict[str, int] = {}
         import_links: dict[str, set[str]] = {}
+        reverse_deps: dict[str, set[str]] = {}  # target -> set of importers
         for e in all_edges:
             dep_counts[e.target_node_id] = dep_counts.get(e.target_node_id, 0) + 1
             import_links.setdefault(e.source_node_id, set()).add(e.target_node_id)
             import_links.setdefault(e.target_node_id, set()).add(e.source_node_id)
+            reverse_deps.setdefault(e.target_node_id, set()).add(e.source_node_id)
+
+        # Pre-load graph nodes for pagerank / impact surface
+        node_res = await session.execute(
+            select(GraphNode).where(GraphNode.repository_id == repo_id)
+        )
+        node_meta = {n.node_id: n for n in node_res.scalars().all()}
 
         # Assess each target
         results = await asyncio.gather(*[
-            _assess_one_target(session, repository, t, dep_counts, import_links)
+            _assess_one_target(
+                session, repository, t, dep_counts, import_links,
+                reverse_deps, node_meta,
+            )
             for t in targets
         ])
 
@@ -770,19 +1082,25 @@ async def get_risk(
 @mcp.tool()
 async def get_why(
     query: str | None = None,
+    targets: list[str] | None = None,
     repo: str | None = None,
 ) -> dict:
-    """Understand why code is built the way it is, using architectural decision records.
+    """Understand why code is built the way it is — intent archaeology.
 
-    Three modes:
-    1. get_why("why is auth using JWT?") — semantic search over decisions
-    2. get_why("src/auth/service.py") — all decisions governing a specific file
-    3. get_why() — decision health dashboard: stale decisions, ungoverned hotspots
+    Four modes:
+    1. get_why("why is auth using JWT?") — semantic + keyword search over decisions
+    2. get_why("src/auth/service.py") — all decisions governing a specific file,
+       plus origin story and alignment score
+    3. get_why("why was caching added?", targets=["src/auth/cache.py"]) —
+       target-aware search: prioritizes decisions governing the target files
+    4. get_why() — decision health dashboard
 
     Always call this before making architectural changes.
 
     Args:
         query: Natural language question, file/module path, or omit for health dashboard.
+        targets: Optional file paths to anchor the search. Decisions governing
+                 these files are prioritized in results.
         repo: Repository path, name, or ID.
     """
     # --- Mode 1: No query → health dashboard ---
@@ -827,7 +1145,7 @@ async def get_why(
             "ungoverned_hotspots": ungoverned[:15],
         }
 
-    # --- Mode 2: Path → decisions governing that path ---
+    # --- Mode 2: Path → decisions, origin story, alignment ---
     if _is_path(query):
         async with get_session(_session_factory) as session:
             repository = await _get_repo(session, repo)
@@ -837,6 +1155,23 @@ async def get_why(
                 )
             )
             all_decisions = res.scalars().all()
+
+            # Load git metadata for origin story
+            git_res = await session.execute(
+                select(GitMetadata).where(
+                    GitMetadata.repository_id == repository.id,
+                    GitMetadata.file_path == query,
+                )
+            )
+            git_meta = git_res.scalar_one_or_none()
+
+            # Pre-load all git metadata for cross-file search (used by fallback)
+            all_git_res = await session.execute(
+                select(GitMetadata).where(
+                    GitMetadata.repository_id == repository.id,
+                )
+            )
+            all_git_meta = all_git_res.scalars().all()
 
         governing = []
         for d in all_decisions:
@@ -858,13 +1193,23 @@ async def get_why(
                     "staleness_score": d.staleness_score,
                 })
 
-        return {
+        result_data: dict[str, Any] = {
             "mode": "path",
             "path": query,
             "decisions": governing,
+            "origin_story": _build_origin_story(query, git_meta, governing),
+            "alignment": _compute_alignment(query, governing, all_decisions),
         }
 
-    # --- Mode 3: Natural language → search ---
+        # --- Fallback: git archaeology when no decisions found ---
+        if not governing:
+            result_data["git_archaeology"] = await _git_archaeology_fallback(
+                query, git_meta, all_git_meta, repository,
+            )
+
+        return result_data
+
+    # --- Mode 3: Natural language → target-aware search ---
     from wikicode.core.persistence.crud import list_decisions as _list_decisions
 
     async with get_session(_session_factory) as session:
@@ -873,17 +1218,38 @@ async def get_why(
             session, repository.id, include_proposed=True, limit=200
         )
 
-    # Keyword scoring
+        # Load git metadata for targets (for origin context in results)
+        target_git: dict[str, Any] = {}
+        if targets:
+            for t in targets:
+                git_res = await session.execute(
+                    select(GitMetadata).where(
+                        GitMetadata.repository_id == repository.id,
+                        GitMetadata.file_path == t,
+                    )
+                )
+                meta = git_res.scalar_one_or_none()
+                if meta:
+                    target_git[t] = meta
+
+    # Build target file set for boosting
+    target_set = set(targets) if targets else set()
+
+    # Weighted keyword scoring across ALL decision fields
     query_lower = query.lower()
     query_words = set(query_lower.split())
-    scored_decisions = []
+    # Remove stop words for better matching
+    stop_words = {"why", "was", "is", "the", "a", "an", "this", "that", "how",
+                  "what", "when", "where", "for", "to", "of", "in", "it", "be"}
+    query_words -= stop_words
+
+    scored_decisions: list[tuple[float, Any]] = []
     for d in all_decisions:
-        text = f"{d.title} {d.decision} {d.rationale}".lower()
-        match_count = sum(1 for w in query_words if w in text)
-        if match_count > 0:
-            scored_decisions.append((match_count, d))
+        score = _score_decision(d, query_words, target_set)
+        if score > 0:
+            scored_decisions.append((score, d))
     scored_decisions.sort(key=lambda t: t[0], reverse=True)
-    keyword_matches = [d for _, d in scored_decisions[:5]]
+    keyword_matches = [d for _, d in scored_decisions[:8]]
 
     # Semantic search over decision vector store
     decision_results = []
@@ -914,6 +1280,7 @@ async def get_why(
                 "status": d.status,
                 "decision": d.decision,
                 "rationale": d.rationale,
+                "context": d.context,
                 "consequences": json.loads(d.consequences_json),
                 "affected_files": json.loads(d.affected_files_json),
                 "source": d.source,
@@ -930,7 +1297,7 @@ async def get_why(
                 "relevance_score": r.score,
             })
 
-    return {
+    result_data: dict[str, Any] = {
         "mode": "search",
         "query": query,
         "decisions": merged_decisions[:8],
@@ -945,6 +1312,224 @@ async def get_why(
             for r in doc_results[:3]
         ],
     }
+
+    # If targets provided, include target context
+    if targets:
+        async with get_session(_session_factory) as session2:
+            # Load all git metadata for cross-file search
+            all_git_res = await session2.execute(
+                select(GitMetadata).where(
+                    GitMetadata.repository_id == repository.id,
+                )
+            )
+            all_git_meta_list = all_git_res.scalars().all()
+
+        target_context = {}
+        for t in targets:
+            t_governing = []
+            for d in all_decisions:
+                affected = json.loads(d.affected_files_json)
+                affected_mods = json.loads(d.affected_modules_json)
+                if t in affected or any(t.startswith(m + "/") for m in affected_mods):
+                    t_governing.append({"title": d.title, "status": d.status})
+            git_m = target_git.get(t)
+            ctx_entry: dict[str, Any] = {
+                "governing_decisions": t_governing,
+                "origin": _build_origin_story(t, git_m, t_governing) if git_m else {
+                    "available": False,
+                    "summary": f"No git history for {t}.",
+                },
+            }
+            # Git archaeology fallback when no decisions found
+            if not t_governing:
+                ctx_entry["git_archaeology"] = await _git_archaeology_fallback(
+                    t, git_m, all_git_meta_list, repository,
+                )
+            target_context[t] = ctx_entry
+        result_data["target_context"] = target_context
+
+    return result_data
+
+
+def _score_decision(
+    d: Any, query_words: set[str], target_files: set[str],
+) -> float:
+    """Score a decision against query words with field weighting and target boosting."""
+    if not query_words:
+        return 1.0 if target_files else 0.0
+
+    # Build weighted text fields
+    fields = [
+        (3.0, d.title.lower()),
+        (2.0, d.decision.lower()),
+        (2.0, d.rationale.lower()),
+        (1.5, d.context.lower()),
+        (1.0, " ".join(json.loads(d.consequences_json)).lower()),
+        (1.0, " ".join(json.loads(d.tags_json)).lower()),
+        (1.5, " ".join(json.loads(d.affected_files_json)).lower()),
+        (1.0, (d.evidence_file or "").lower()),
+    ]
+
+    score = 0.0
+    for weight, text in fields:
+        for word in query_words:
+            if word in text:
+                score += weight
+
+    # Target file boosting: decisions governing target files get a bonus
+    if target_files:
+        affected = set(json.loads(d.affected_files_json))
+        affected_mods = json.loads(d.affected_modules_json)
+        for t in target_files:
+            if t in affected:
+                score += 5.0  # Strong boost for exact file match
+            elif any(t.startswith(m + "/") for m in affected_mods):
+                score += 3.0  # Module-level match
+
+    return score
+
+
+async def _git_archaeology_fallback(
+    file_path: str,
+    git_meta: Any | None,
+    all_git_meta: list,
+    repository: Any,
+) -> dict:
+    """When no decisions govern a file, mine git history for intent signals."""
+    result: dict[str, Any] = {"triggered": True}
+
+    # --- Layer 1: File's own significant commits ---
+    file_commits = []
+    if git_meta and git_meta.significant_commits_json:
+        commits = json.loads(git_meta.significant_commits_json)
+        file_commits = [
+            {
+                "sha": c.get("sha", ""),
+                "message": c.get("message", ""),
+                "author": c.get("author", ""),
+                "date": c.get("date", ""),
+            }
+            for c in commits
+        ]
+    result["file_commits"] = file_commits
+
+    # --- Layer 2: Cross-file search — other files' commits mentioning this file ---
+    basename = file_path.rsplit("/", 1)[-1] if "/" in file_path else file_path
+    stem = basename.rsplit(".", 1)[0] if "." in basename else basename
+    # Convert snake_case/kebab to searchable terms: auth_cache_service -> {"auth", "cache", "service"}
+    search_terms = set(re.split(r"[_\-/.]", stem.lower()))
+    search_terms.discard("")
+    # Also search for the full basename
+    search_terms.add(basename.lower())
+
+    cross_references = []
+    for gm in all_git_meta:
+        if gm.file_path == file_path:
+            continue
+        commits = json.loads(gm.significant_commits_json) if gm.significant_commits_json else []
+        for c in commits:
+            msg_lower = c.get("message", "").lower()
+            # Match if the commit message mentions the file basename or 2+ stem terms
+            matched_terms = [t for t in search_terms if t in msg_lower]
+            if basename.lower() in msg_lower or len(matched_terms) >= 2:
+                cross_references.append({
+                    "source_file": gm.file_path,
+                    "sha": c.get("sha", ""),
+                    "message": c.get("message", ""),
+                    "author": c.get("author", ""),
+                    "date": c.get("date", ""),
+                    "matched_terms": matched_terms,
+                })
+    # Deduplicate by SHA and sort by date descending
+    seen_shas: set[str] = set()
+    unique_refs = []
+    for cr in cross_references:
+        if cr["sha"] not in seen_shas:
+            seen_shas.add(cr["sha"])
+            unique_refs.append(cr)
+    unique_refs.sort(key=lambda x: x.get("date", ""), reverse=True)
+    result["cross_references"] = unique_refs[:10]
+
+    # --- Layer 3: Live git log (when local repo exists) ---
+    git_log_results = []
+    local_path = getattr(repository, "local_path", None)
+    if local_path and os.path.isdir(os.path.join(local_path, ".git")):
+        git_log_results = await _run_git_log(local_path, file_path, stem)
+    result["git_log"] = git_log_results
+
+    # --- Summary ---
+    total = len(file_commits) + len(unique_refs) + len(git_log_results)
+    if total > 0:
+        result["summary"] = (
+            f"No architectural decisions found for {file_path}, but git archaeology "
+            f"recovered {len(file_commits)} direct commit(s), "
+            f"{len(unique_refs)} cross-reference(s), and "
+            f"{len(git_log_results)} git log result(s). "
+            "Review these to understand the intent behind this code."
+        )
+    else:
+        result["summary"] = (
+            f"No architectural decisions or git history found for {file_path}. "
+            "This file may be new or not yet indexed."
+        )
+
+    return result
+
+
+async def _run_git_log(
+    repo_path: str, file_path: str, stem: str,
+) -> list[dict]:
+    """Run git log against the local repo for deeper history. Best-effort."""
+    import subprocess
+
+    results = []
+    try:
+        # Search for commits that touched this file
+        proc = subprocess.run(
+            ["git", "log", "--follow", "--format=%H\t%an\t%ai\t%s", "-20", "--", file_path],
+            cwd=repo_path,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if proc.returncode == 0:
+            for line in proc.stdout.strip().splitlines():
+                parts = line.split("\t", 3)
+                if len(parts) == 4:
+                    results.append({
+                        "sha": parts[0][:12],
+                        "author": parts[1],
+                        "date": parts[2][:10],
+                        "message": parts[3],
+                        "source": "git_log_follow",
+                    })
+
+        # Also grep for the class/function name in commit messages
+        if stem and len(stem) >= 3:
+            proc2 = subprocess.run(
+                ["git", "log", "--all", "--grep", stem, "--format=%H\t%an\t%ai\t%s", "-10"],
+                cwd=repo_path,
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            if proc2.returncode == 0:
+                seen = {r["sha"] for r in results}
+                for line in proc2.stdout.strip().splitlines():
+                    parts = line.split("\t", 3)
+                    if len(parts) == 4 and parts[0][:12] not in seen:
+                        seen.add(parts[0][:12])
+                        results.append({
+                            "sha": parts[0][:12],
+                            "author": parts[1],
+                            "date": parts[2][:10],
+                            "message": parts[3],
+                            "source": "git_log_grep",
+                        })
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+        pass  # Git not available or repo not accessible
+
+    return results[:20]
 
 
 # ---------------------------------------------------------------------------
@@ -1233,7 +1818,7 @@ def _build_visual_context(
 
 
 # ---------------------------------------------------------------------------
-# Tool 7: get_dead_code (unchanged)
+# Tool 7: get_dead_code (tiered refactor plan)
 # ---------------------------------------------------------------------------
 
 
@@ -1244,76 +1829,203 @@ async def get_dead_code(
     min_confidence: float = 0.5,
     safe_only: bool = False,
     limit: int = 20,
+    tier: str | None = None,
+    directory: str | None = None,
+    owner: str | None = None,
+    group_by: str | None = None,
 ) -> dict:
-    """Get dead and unused code findings. Use before cleanup tasks.
+    """Get a tiered refactor plan for dead and unused code.
 
-    Results sorted by confidence desc, then lines desc (biggest wins first).
+    Returns findings organized into confidence tiers (high/medium/low),
+    with per-directory rollups, ownership hotspots, and impact estimates
+    so you can prioritize cleanup.
+
+    Use group_by="directory" for a directory-level overview, or
+    group_by="owner" to see who owns the most dead code. Use tier
+    to focus on a single confidence band.
 
     Args:
         repo: Repository path, name, or ID.
         kind: Filter by kind (unreachable_file, unused_export, unused_internal, zombie_package).
         min_confidence: Minimum confidence threshold (default 0.5).
         safe_only: Only return findings marked safe_to_delete (default false).
-        limit: Maximum findings to return (default 20).
+        limit: Maximum findings per tier (default 20).
+        tier: Focus on a single tier: "high" (>=0.8), "medium" (0.5-0.8), or "low" (<0.5).
+        directory: Filter findings to a specific directory prefix.
+        owner: Filter findings by primary owner name.
+        group_by: "directory" for per-directory rollup, "owner" for ownership hotspots.
     """
     async with get_session(_session_factory) as session:
         repository = await _get_repo(session, repo)
 
-        query = (
-            select(DeadCodeFinding)
-            .where(
-                DeadCodeFinding.repository_id == repository.id,
-                DeadCodeFinding.status == "open",
-                DeadCodeFinding.confidence >= min_confidence,
-            )
-            .order_by(DeadCodeFinding.confidence.desc(), DeadCodeFinding.lines.desc())
+        # Fetch all open findings for summary computation
+        all_query = select(DeadCodeFinding).where(
+            DeadCodeFinding.repository_id == repository.id,
+            DeadCodeFinding.status == "open",
         )
-
-        if kind:
-            query = query.where(DeadCodeFinding.kind == kind)
-        if safe_only:
-            query = query.where(DeadCodeFinding.safe_to_delete == True)  # noqa: E712
-        query = query.limit(limit)
-
-        result = await session.execute(query)
-        findings = list(result.scalars().all())
-
-        # Compute summary
-        all_result = await session.execute(
-            select(DeadCodeFinding).where(
-                DeadCodeFinding.repository_id == repository.id,
-                DeadCodeFinding.status == "open",
-            )
-        )
+        all_result = await session.execute(all_query)
         all_findings = list(all_result.scalars().all())
 
-        by_kind: dict[str, int] = {}
-        for f in all_findings:
-            by_kind[f.kind] = by_kind.get(f.kind, 0) + 1
+    # --- Apply filters ---
+    filtered = all_findings
+    if kind:
+        filtered = [f for f in filtered if f.kind == kind]
+    if safe_only:
+        filtered = [f for f in filtered if f.safe_to_delete]
+    if min_confidence > 0:
+        filtered = [f for f in filtered if f.confidence >= min_confidence]
+    if directory:
+        prefix = directory.rstrip("/") + "/"
+        filtered = [f for f in filtered if f.file_path.startswith(prefix)]
+    if owner:
+        owner_lower = owner.lower()
+        filtered = [f for f in filtered if f.primary_owner and f.primary_owner.lower() == owner_lower]
 
+    # --- Build tiered structure ---
+    tiers = _build_tiers(filtered, limit, tier)
+
+    # --- Summary across ALL open findings (unfiltered) ---
+    by_kind: dict[str, int] = {}
+    for f in all_findings:
+        by_kind[f.kind] = by_kind.get(f.kind, 0) + 1
+
+    summary = {
+        "total_findings": len(all_findings),
+        "filtered_findings": len(filtered),
+        "deletable_lines": sum(f.lines for f in all_findings if f.safe_to_delete),
+        "safe_to_delete_count": sum(1 for f in all_findings if f.safe_to_delete),
+        "by_kind": by_kind,
+    }
+
+    result: dict[str, Any] = {"summary": summary, "tiers": tiers}
+
+    # --- Grouping views ---
+    if group_by == "directory":
+        result["by_directory"] = _rollup_by_directory(filtered)
+    elif group_by == "owner":
+        result["by_owner"] = _rollup_by_owner(filtered)
+
+    # --- Impact estimate ---
+    result["impact"] = _compute_impact(tiers)
+
+    return result
+
+
+def _serialize_finding(f: Any) -> dict:
+    """Serialize a single DeadCodeFinding to dict."""
+    return {
+        "kind": f.kind,
+        "file_path": f.file_path,
+        "symbol_name": f.symbol_name,
+        "confidence": f.confidence,
+        "reason": f.reason,
+        "safe_to_delete": f.safe_to_delete,
+        "lines": f.lines,
+        "last_commit_at": f.last_commit_at.isoformat() if f.last_commit_at else None,
+        "primary_owner": f.primary_owner,
+        "age_days": f.age_days,
+    }
+
+
+def _build_tiers(
+    findings: list, limit: int, tier_filter: str | None,
+) -> dict:
+    """Split findings into high/medium/low confidence tiers."""
+    high = sorted(
+        [f for f in findings if f.confidence >= 0.8],
+        key=lambda f: (-f.confidence, -f.lines),
+    )
+    medium = sorted(
+        [f for f in findings if 0.5 <= f.confidence < 0.8],
+        key=lambda f: (-f.confidence, -f.lines),
+    )
+    low = sorted(
+        [f for f in findings if f.confidence < 0.5],
+        key=lambda f: (-f.confidence, -f.lines),
+    )
+
+    def _tier_block(name: str, items: list, description: str) -> dict:
         return {
-            "summary": {
-                "total_findings": len(all_findings),
-                "deletable_lines": sum(f.lines for f in all_findings if f.safe_to_delete),
-                "safe_to_delete_count": sum(1 for f in all_findings if f.safe_to_delete),
-                "by_kind": by_kind,
-            },
-            "findings": [
-                {
-                    "kind": f.kind,
-                    "file_path": f.file_path,
-                    "symbol_name": f.symbol_name,
-                    "confidence": f.confidence,
-                    "reason": f.reason,
-                    "safe_to_delete": f.safe_to_delete,
-                    "lines": f.lines,
-                    "last_commit_at": f.last_commit_at.isoformat() if f.last_commit_at else None,
-                    "primary_owner": f.primary_owner,
-                    "age_days": f.age_days,
-                }
-                for f in findings
-            ],
+            "description": description,
+            "count": len(items),
+            "lines": sum(f.lines for f in items),
+            "safe_count": sum(1 for f in items if f.safe_to_delete),
+            "findings": [_serialize_finding(f) for f in items[:limit]],
+            "truncated": len(items) > limit,
         }
+
+    tiers = {}
+    if tier_filter is None or tier_filter == "high":
+        tiers["high"] = _tier_block(
+            "high", high,
+            "High confidence (>=0.8): Zero references in the codebase. Safe to delete.",
+        )
+    if tier_filter is None or tier_filter == "medium":
+        tiers["medium"] = _tier_block(
+            "medium", medium,
+            "Medium confidence (0.5-0.8): Likely unused but may have indirect references. Review before deleting.",
+        )
+    if tier_filter is None or tier_filter == "low":
+        tiers["low"] = _tier_block(
+            "low", low,
+            "Low confidence (<0.5): Potentially used via dynamic imports or reflection. Investigate first.",
+        )
+    return tiers
+
+
+def _rollup_by_directory(findings: list) -> list[dict]:
+    """Group findings by top-level directory."""
+    dirs: dict[str, dict] = {}
+    for f in findings:
+        parts = f.file_path.split("/")
+        # Use first two path segments as directory key, or just the first
+        dir_key = "/".join(parts[:2]) if len(parts) > 2 else parts[0]
+        if dir_key not in dirs:
+            dirs[dir_key] = {"directory": dir_key, "count": 0, "lines": 0, "safe_count": 0}
+        dirs[dir_key]["count"] += 1
+        dirs[dir_key]["lines"] += f.lines
+        if f.safe_to_delete:
+            dirs[dir_key]["safe_count"] += 1
+
+    return sorted(dirs.values(), key=lambda d: -d["lines"])
+
+
+def _rollup_by_owner(findings: list) -> list[dict]:
+    """Group findings by primary owner."""
+    owners: dict[str, dict] = {}
+    for f in findings:
+        name = f.primary_owner or "unowned"
+        if name not in owners:
+            owners[name] = {"owner": name, "count": 0, "lines": 0, "safe_count": 0}
+        owners[name]["count"] += 1
+        owners[name]["lines"] += f.lines
+        if f.safe_to_delete:
+            owners[name]["safe_count"] += 1
+
+    return sorted(owners.values(), key=lambda o: -o["lines"])
+
+
+def _compute_impact(tiers: dict) -> dict:
+    """Compute total impact across tiers."""
+    total_lines = 0
+    safe_lines = 0
+    for tier_data in tiers.values():
+        total_lines += tier_data["lines"]
+        # Approximate safe lines from findings in the tier
+        for f in tier_data["findings"]:
+            if f["safe_to_delete"]:
+                safe_lines += f["lines"]
+
+    return {
+        "total_lines_reclaimable": total_lines,
+        "safe_lines_reclaimable": safe_lines,
+        "recommendation": (
+            "Start with the 'high' tier — these have zero references and are safe to remove. "
+            "Then review 'medium' tier findings with your team."
+            if total_lines > 0
+            else "No dead code found matching your filters."
+        ),
+    }
 
 
 # ---------------------------------------------------------------------------
