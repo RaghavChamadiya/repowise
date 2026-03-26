@@ -456,14 +456,19 @@ def init_command(
         graph_builder.build()
         progress.update(task_graph, completed=1)
 
-        # Wait for git indexing to complete
+        # Wait for git indexing to complete — show a spinner so the user
+        # doesn't think it's stuck after the co-change bar hits 100%.
         if git_future is not None:
+            task_git_finalize = progress.add_task(
+                "Finalizing git analysis...", total=None, visible=True,
+            )
             try:
                 git_summary, git_metadata_list = git_future.result()
                 git_meta_map = {m["file_path"]: m for m in git_metadata_list}
                 graph_builder.add_co_change_edges(git_meta_map)
             except Exception as exc:
                 progress.console.print(f"[yellow]Git indexing failed: {exc}[/yellow]")
+            progress.update(task_git_finalize, visible=False)
 
         git_executor.shutdown(wait=False)
 

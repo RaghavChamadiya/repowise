@@ -267,8 +267,20 @@ class GitIndexer:
                     on_file_done()
                 return result
 
-        tasks = [index_one(fp) for fp in indexable_files]
-        metadata_list = await asyncio.gather(*tasks, return_exceptions=True)
+        # Run per-file indexing and co-change analysis in parallel — they are
+        # independent (co-change only needs tracked_files, not per-file results).
+        file_tasks = [index_one(fp) for fp in indexable_files]
+
+        async def _co_change_task() -> dict[str, list[dict]]:
+            return await loop.run_in_executor(
+                None, self._compute_co_changes, repo, set(tracked_files),
+                self.commit_limit, 3, on_commit_done, on_co_change_start,
+            )
+
+        metadata_list, co_changes = await asyncio.gather(
+            asyncio.gather(*file_tasks, return_exceptions=True),
+            _co_change_task(),
+        )
 
         # Filter out failures
         results: list[dict] = []
@@ -278,12 +290,7 @@ class GitIndexer:
             else:
                 results.append(r)
 
-        # Co-change analysis uses ALL tracked files (not just indexable ones) so
-        # that relationships like "whenever auth.py changes, config.yaml changes too"
-        # are captured even for files we didn't run full git log/blame on.
-        co_changes = await loop.run_in_executor(
-            None, self._compute_co_changes, repo, set(tracked_files), self.commit_limit, 3, on_commit_done, on_co_change_start
-        )
+        # Merge co-change partners into per-file metadata
         for meta in results:
             fp = meta["file_path"]
             if fp in co_changes:
