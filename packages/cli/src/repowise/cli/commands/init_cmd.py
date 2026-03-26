@@ -231,6 +231,22 @@ def init_command(
     # Load saved API keys from .repowise/.env (won't overwrite existing env vars)
     load_dotenv(repo_path)
 
+    # Suppress noisy library/structlog output so the interactive UX stays clean
+    import logging
+
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("httpcore").setLevel(logging.WARNING)
+    for _logger_name in ("repowise.core", "repowise.server"):
+        logging.getLogger(_logger_name).setLevel(logging.WARNING)
+
+    try:
+        import structlog
+        structlog.configure(
+            wrapper_class=structlog.make_filtering_bound_logger(logging.WARNING),
+        )
+    except ImportError:
+        pass
+
     # ---- Interactive mode (TTY, no explicit flags) ----
     is_interactive = sys.stdin.isatty() and provider_name is None and not index_only
 
@@ -489,8 +505,9 @@ def init_command(
     try:
         from repowise.core.analysis.dead_code import DeadCodeAnalyzer
 
-        analyzer = DeadCodeAnalyzer(graph_builder.graph(), git_meta_map)
-        dead_code_report = analyzer.analyze()
+        with console.status("  Detecting dead code…", spinner="dots"):
+            analyzer = DeadCodeAnalyzer(graph_builder.graph(), git_meta_map)
+            dead_code_report = analyzer.analyze()
         unreachable = sum(
             1 for f in dead_code_report.findings if f.kind.value == "unreachable_file"
         )
@@ -519,7 +536,8 @@ def init_command(
             git_meta_map=git_meta_map,
             parsed_files=parsed_files,
         )
-        decision_report = run_async(extractor.extract_all())
+        with console.status("  Extracting architectural decisions…", spinner="dots"):
+            decision_report = run_async(extractor.extract_all())
         inline = decision_report.by_source.get("inline_marker", 0)
         readme = decision_report.by_source.get("readme_mining", 0)
         git_arch = decision_report.by_source.get("git_archaeology", 0)
