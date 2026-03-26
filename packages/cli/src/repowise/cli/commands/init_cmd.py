@@ -16,9 +16,7 @@ from rich.table import Table
 from repowise.cli.cost_estimator import build_generation_plan, estimate_cost
 from repowise.cli.helpers import (
     console,
-    ensure_db,
     ensure_repowise_dir,
-    err_console,
     get_head_commit,
     load_config,
     load_state,
@@ -135,20 +133,6 @@ async def _persist_index_only(
     await engine.dispose()
 
 
-_PROVIDER_DEFAULTS: dict[str, str] = {
-    "gemini": "gemini-3.1-flash-lite-preview",
-    "openai": "gpt-4.1",
-    "anthropic": "claude-sonnet-4-6",
-    "ollama": "llama3.2",
-    "litellm": "groq/llama-3.1-70b-versatile",
-}
-
-_EMBEDDER_ENV: dict[str, str] = {
-    "gemini": "GEMINI_API_KEY",
-    "openai": "OPENAI_API_KEY",
-}
-
-
 def _resolve_embedder(embedder_flag: str | None) -> str:
     """Auto-detect embedder from env vars, or use the flag value."""
     if embedder_flag:
@@ -158,57 +142,6 @@ def _resolve_embedder(embedder_flag: str | None) -> str:
     if os.environ.get("OPENAI_API_KEY"):
         return "openai"
     return "mock"
-
-
-def _interactive_provider_wizard(model_flag: str | None) -> tuple[str, str]:
-    """Interactive provider selection wizard.
-
-    Returns (provider_name, model_name).
-    Only called when stdin is a TTY and no --provider flag was given.
-    """
-    available: list[str] = []
-    env_status: dict[str, str] = {
-        "gemini": "GEMINI_API_KEY" if os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY") else "",
-        "openai": "OPENAI_API_KEY" if os.environ.get("OPENAI_API_KEY") else "",
-        "anthropic": "ANTHROPIC_API_KEY" if os.environ.get("ANTHROPIC_API_KEY") else "",
-        "ollama": "OLLAMA_BASE_URL" if os.environ.get("OLLAMA_BASE_URL") else "",
-    }
-
-    table = Table(title="Available providers", show_header=False, box=None, padding=(0, 1))
-    for p, env_key in env_status.items():
-        if env_key:
-            available.append(p)
-            default_model = _PROVIDER_DEFAULTS.get(p, "")
-            table.add_row(f"[green][+][/green] [bold]{p}[/bold]", f"({env_key} set)", f"-> {default_model}")
-        else:
-            env_hint = {"gemini": "GEMINI_API_KEY", "openai": "OPENAI_API_KEY",
-                        "anthropic": "ANTHROPIC_API_KEY", "ollama": "OLLAMA_BASE_URL"}[p]
-            table.add_row(f"[-] [dim]{p}[/dim]", f"({env_hint} not set)", "")
-    console.print(table)
-
-    if not available:
-        raise click.ClickException(
-            "No provider API keys found. Set ANTHROPIC_API_KEY, OPENAI_API_KEY, "
-            "GEMINI_API_KEY, or OLLAMA_BASE_URL and retry."
-        )
-
-    if len(available) == 1:
-        chosen = available[0]
-        console.print(f"[cyan]Auto-selected provider:[/cyan] {chosen}")
-    else:
-        chosen = click.prompt(
-            "Select provider",
-            type=click.Choice(available),
-            default=available[0],
-        )
-
-    default_model = _PROVIDER_DEFAULTS.get(chosen, "")
-    if model_flag:
-        model = model_flag
-    else:
-        model = click.prompt("Model (press Enter for default)", default=default_model)
-
-    return chosen, model
 
 
 @click.command("init")
@@ -274,6 +207,18 @@ def init_command(
     PATH defaults to the current directory.
     Use --index-only to run ingestion (AST, graph, git, dead code) without LLM generation.
     """
+    from repowise.cli.ui import (
+        BRAND,
+        build_completion_panel,
+        format_elapsed,
+        interactive_advanced_config,
+        interactive_mode_select,
+        interactive_provider_select,
+        print_banner,
+        print_index_only_intro,
+        print_phase_header,
+    )
+
     start = time.monotonic()
     repo_path = resolve_repo_path(path)
 
@@ -281,6 +226,30 @@ def init_command(
         raise click.ClickException(f"Not a directory: {repo_path}")
 
     ensure_repowise_dir(repo_path)
+
+    # ---- Interactive mode (TTY, no explicit flags) ----
+    is_interactive = sys.stdin.isatty() and provider_name is None and not index_only
+
+    if is_interactive:
+        print_banner(console, repo_name=repo_path.name)
+        mode = interactive_mode_select(console)
+
+        if mode == "index_only":
+            index_only = True
+        elif mode == "advanced":
+            # Provider setup first, then advanced config
+            provider_name, model = interactive_provider_select(console, model)
+            adv = interactive_advanced_config(console)
+            commit_limit = adv["commit_limit"]
+            follow_renames = adv["follow_renames"]
+            skip_tests = adv["skip_tests"]
+            skip_infra = adv["skip_infra"]
+            concurrency = adv["concurrency"]
+            exclude = adv["exclude"]
+            test_run = adv["test_run"]
+        else:
+            # Full mode — just provider setup
+            provider_name, model = interactive_provider_select(console, model)
 
     # Merge exclude_patterns from config.yaml and --exclude/-x flags
     config = load_config(repo_path)
@@ -300,6 +269,9 @@ def init_command(
 
     embedder = _resolve_embedder(embedder_name)
 
+    # Compute phase counts for headers
+    total_phases = 3 if index_only else 4
+
     if index_only:
         provider = None
         # Still try to resolve a provider for decision extraction (no page generation)
@@ -311,31 +283,43 @@ def init_command(
                 decision_provider = resolve_provider(provider_name, model, repo_path)
         except Exception:
             pass  # No provider available — inline markers only
-        console.print(f"[bold]repowise index-only[/bold] — {repo_path}")
-        console.print("[yellow]Skipping LLM page generation (--index-only)[/yellow]")
-        if decision_provider:
-            console.print(f"Decision extraction provider: [cyan]{decision_provider.provider_name}[/cyan]")
+
+        has_provider = decision_provider is not None
+        if is_interactive:
+            print_index_only_intro(console, has_provider=has_provider)
+        else:
+            console.print(f"[bold]repowise index-only[/bold] — {repo_path}")
+            console.print("[yellow]Skipping LLM page generation (--index-only)[/yellow]")
+            if decision_provider:
+                console.print(f"Decision extraction provider: [cyan]{decision_provider.provider_name}[/cyan]")
     else:
-        # Interactive wizard when no --provider given and running in a terminal
-        if provider_name is None and sys.stdin.isatty():
-            provider_name, model = _interactive_provider_wizard(model)
+        # Non-interactive path: resolve provider from flags/env
+        if not is_interactive and provider_name is None and sys.stdin.isatty():
+            # Fallback for TTY without interactive mode (shouldn't happen, but safety)
+            from repowise.cli.ui import interactive_provider_select as _ips
+            provider_name, model = _ips(console, model)
 
         provider = resolve_provider(provider_name, model, repo_path)
-        console.print(f"[bold]repowise init[/bold] — {repo_path}")
-        console.print(f"Provider: [cyan]{provider.provider_name}[/cyan] / Model: [cyan]{provider.model_name}[/cyan]")
-        console.print(f"Embedder: [cyan]{embedder}[/cyan]")
+        if not is_interactive:
+            console.print(f"[bold]repowise init[/bold] — {repo_path}")
+        console.print(f"  Provider: [cyan]{provider.provider_name}[/cyan] / Model: [cyan]{provider.model_name}[/cyan]")
+        console.print(f"  Embedder: [cyan]{embedder}[/cyan]")
 
         # Validate API key with a lightweight call before ingesting
         from repowise.core.providers.base import ProviderError
 
-        console.print("Verifying provider connection...")
-        try:
-            run_async(provider.generate("You are a test.", "Reply with OK.", max_tokens=50))
-            console.print("[green]Provider connection verified[/green]")
-        except ProviderError as exc:
-            raise click.ClickException(f"Provider validation failed: {exc}")
+        with console.status("  Verifying provider connection…", spinner="dots"):
+            try:
+                run_async(provider.generate("You are a test.", "Reply with OK.", max_tokens=50))
+            except ProviderError as exc:
+                raise click.ClickException(f"Provider validation failed: {exc}")
+        console.print("  [green]✓[/green] Provider connection verified")
 
-    # ---- Step 1: Ingest + Git (parallelized) ----
+    # ---- Phase 1: Ingestion ----
+    print_phase_header(
+        console, 1, total_phases, "Ingestion",
+        "Parsing source files and building the dependency graph",
+    )
     from concurrent.futures import ThreadPoolExecutor, as_completed
 
     from repowise.core.generation import GenerationConfig
@@ -464,13 +448,13 @@ def init_command(
 
     if traverser._oversized_skip_count:
         console.print(
-            f"Skipped [yellow]{traverser._oversized_skip_count}[/yellow] oversized files "
+            f"  Skipped [yellow]{traverser._oversized_skip_count}[/yellow] oversized files "
             f"(>{traverser.max_file_size_bytes // 1024} KB)"
         )
-    console.print(f"Ingested [green]{len(parsed_files)}[/green] files")
+    console.print(f"  [green]✓[/green] Ingested [bold]{len(parsed_files)}[/bold] files")
     if git_summary:
         console.print(
-            f"Git indexed: [green]{git_summary.files_indexed}[/green] files "
+            f"  [green]✓[/green] Git: [bold]{git_summary.files_indexed}[/bold] files "
             f"· {git_summary.hotspots} hotspots · {git_summary.stable_files} stable "
             f"({git_summary.duration_seconds:.1f}s)"
         )
@@ -491,12 +475,16 @@ def init_command(
         )[:10]
         console.print(f"[yellow]Test run: limiting to {len(parsed_files)} files[/yellow]")
 
-    # ---- Step 3.6: Dead code detection ----
+    # ---- Phase 2: Analysis ----
+    print_phase_header(
+        console, 2, total_phases, "Analysis",
+        "Dead code detection and architectural decision extraction",
+    )
+
     dead_code_report = None
     try:
         from repowise.core.analysis.dead_code import DeadCodeAnalyzer
 
-        console.print("[bold]Detecting dead code...[/bold]")
         analyzer = DeadCodeAnalyzer(graph_builder.graph(), git_meta_map)
         dead_code_report = analyzer.analyze()
         unreachable = sum(
@@ -506,19 +494,17 @@ def init_command(
             1 for f in dead_code_report.findings if f.kind.value == "unused_export"
         )
         console.print(
-            f"[3.6] Dead code: [yellow]{unreachable}[/yellow] unreachable files "
+            f"  [green]✓[/green] Dead code: [yellow]{unreachable}[/yellow] unreachable files "
             f"· [yellow]{unused_exports}[/yellow] unused exports "
             f"(~{dead_code_report.deletable_lines:,} lines)"
         )
     except Exception as exc:
-        console.print(f"[yellow]Dead code detection skipped: {exc}[/yellow]")
+        console.print(f"  [yellow]Dead code detection skipped: {exc}[/yellow]")
 
-    # ---- Step 3.7: Decision extraction ----
     decision_report = None
     try:
         from repowise.core.analysis.decision_extractor import DecisionExtractor
 
-        console.print("[bold]Extracting architectural decisions...[/bold]")
         # Use decision_provider in index-only mode (provider is None but
         # decision_provider may still be set for decision extraction)
         _decision_llm = provider or (decision_provider if index_only else None)
@@ -534,23 +520,26 @@ def init_command(
         readme = decision_report.by_source.get("readme_mining", 0)
         git_arch = decision_report.by_source.get("git_archaeology", 0)
         console.print(
-            f"Decisions: [green]{inline}[/green] inline markers · "
-            f"[yellow]{readme}[/yellow] from docs · [yellow]{git_arch}[/yellow] from git"
+            f"  [green]✓[/green] Decisions: [green]{inline}[/green] inline "
+            f"· [yellow]{readme}[/yellow] from docs · [yellow]{git_arch}[/yellow] from git"
         )
     except Exception as exc:
-        console.print(f"[yellow]Decision extraction skipped: {exc}[/yellow]")
+        console.print(f"  [yellow]Decision extraction skipped: {exc}[/yellow]")
 
-    # ---- Index-only: persist everything except pages and exit ----
+    # ---- Index-only: persist and show completion panel ----
     if index_only:
-        run_async(_persist_index_only(
-            repo_path=repo_path,
-            repo_name=repo_path.name,
-            graph_builder=graph_builder,
-            parsed_files=parsed_files,
-            git_metadata_list=git_metadata_list,
-            dead_code_report=dead_code_report,
-            decision_report=decision_report,
-        ))
+        print_phase_header(console, 3, total_phases, "Persistence", "Saving to database")
+
+        with console.status("  Persisting index…", spinner="dots"):
+            run_async(_persist_index_only(
+                repo_path=repo_path,
+                repo_name=repo_path.name,
+                graph_builder=graph_builder,
+                parsed_files=parsed_files,
+                git_metadata_list=git_metadata_list,
+                dead_code_report=dead_code_report,
+                decision_report=decision_report,
+            ))
         # Persist commit_limit to config so `repowise update` picks it up
         if commit_limit is not None:
             cfg = load_config(repo_path)
@@ -564,15 +553,56 @@ def init_command(
                 )
             except ImportError:
                 pass  # No yaml — commit_limit will use default next time
+
+        # MCP config
+        from repowise.cli.mcp_config import save_mcp_config
+        save_mcp_config(repo_path)
+
         elapsed = time.monotonic() - start
-        console.print(f"[bold green]Index complete[/bold green] in {elapsed:.1f}s — graph, symbols, git, and dead code persisted.")
+
+        # Collect stats for the completion panel
+        _graph = graph_builder.graph()
+        _langs = {fi.language for fi in file_infos if hasattr(fi, "language") and fi.language}
+        _dc_unreachable = sum(1 for f in (dead_code_report.findings if dead_code_report else []) if f.kind.value == "unreachable_file")
+        _dc_unused = sum(1 for f in (dead_code_report.findings if dead_code_report else []) if f.kind.value == "unused_export")
+        _n_decisions = sum(decision_report.by_source.values()) if decision_report else 0
+
+        metrics: list[tuple[str, str]] = [
+            ("Files indexed", str(len(parsed_files))),
+            ("Symbols", f"{sum(len(pf.symbols) for pf in parsed_files):,}"),
+            ("Languages", str(len(_langs))),
+            ("Elapsed", format_elapsed(elapsed)),
+            ("", ""),
+            ("Graph", f"{_graph.number_of_nodes()} nodes · {_graph.number_of_edges()} edges"),
+            ("Dead code", f"{_dc_unreachable} unreachable · {_dc_unused} unused exports"),
+            ("Decisions", str(_n_decisions)),
+        ]
+        if git_summary:
+            metrics.append(("Git history", f"{git_summary.files_indexed} files · {git_summary.hotspots} hotspots"))
+
+        next_steps = [
+            ("repowise mcp .", "start MCP server for AI assistants"),
+            ("repowise init --provider gemini", "generate full documentation"),
+            ("repowise dead-code", "explore dead code findings"),
+            ("repowise search <query>", "search the index"),
+        ]
+        console.print()
+        console.print(build_completion_panel("repowise index complete", metrics, next_steps=next_steps))
+        console.print()
         return
 
-    # ---- Step 2: Cost estimate ----
+    # ---- Phase 3: Generation ----
+    print_phase_header(
+        console, 3, total_phases, "Generation",
+        f"Generating wiki pages with {provider.provider_name} / {provider.model_name}",
+    )
+
     plans = build_generation_plan(parsed_files, graph_builder, config, skip_tests, skip_infra)
     est = estimate_cost(plans, provider.provider_name, provider.model_name)
 
-    table = Table(title="Generation Plan")
+    from rich.panel import Panel as _Panel
+
+    table = Table(title="Generation Plan", border_style=BRAND)
     table.add_column("Page Type", style="cyan")
     table.add_column("Count", justify="right")
     table.add_column("Level", justify="right")
@@ -583,21 +613,21 @@ def init_command(
     console.print(table)
 
     console.print(
-        f"Estimated tokens: ~{est.estimated_input_tokens + est.estimated_output_tokens:,} "
+        f"  Estimated tokens: ~{est.estimated_input_tokens + est.estimated_output_tokens:,} "
         f"(${est.estimated_cost_usd:.2f} USD)"
     )
+    console.print()
 
     if dry_run:
         console.print("[yellow]Dry run — no pages generated.[/yellow]")
         return
 
-    # ---- Step 3: Confirmation ----
     if est.estimated_cost_usd > 2.00 and not yes:
-        if not click.confirm("Estimated cost exceeds $2.00. Continue?"):
+        if not click.confirm("  Estimated cost exceeds $2.00. Continue?"):
             console.print("[yellow]Aborted.[/yellow]")
             return
 
-    # ---- Step 4: Generate ----
+    # ---- Generate pages ----
     from repowise.core.generation import ContextAssembler, JobSystem, PageGenerator
     from repowise.core.persistence.embedder import MockEmbedder
     from repowise.core.persistence.vector_store import InMemoryVectorStore
@@ -668,9 +698,13 @@ def init_command(
             )
         )
 
-    console.print(f"Generated [green]{len(generated_pages)}[/green] pages")
+    console.print(f"  [green]✓[/green] Generated [bold]{len(generated_pages)}[/bold] pages")
 
-    # ---- Step 5: Persist ----
+    # ---- Phase 4: Persistence ----
+    print_phase_header(
+        console, 4, total_phases, "Persistence",
+        "Saving to database and building search index",
+    )
     async def _persist() -> None:
         from repowise.core.persistence import (
             FullTextSearch,
@@ -781,16 +815,11 @@ def init_command(
 
         await engine.dispose()
 
-    with Progress(
-        SpinnerColumn(),
-        TextColumn("[progress.description]{task.description}"),
-        TimeElapsedColumn(),
-        console=console,
-    ) as persist_progress:
-        persist_progress.add_task("Persisting to database...", total=None)
+    with console.status("  Persisting to database…", spinner="dots"):
         run_async(_persist())
+    console.print("  [green]✓[/green] Database updated")
 
-    # ---- Step 6: State ----
+    # ---- State ----
     # Query actual DB page count (not just current job's pages)
     async def _count_db_pages() -> int:
         from sqlalchemy import func as sa_func, select as sa_select
@@ -803,7 +832,6 @@ def init_command(
         _engine = create_engine(_get_url(repo_path))
         _sf = create_session_factory(_engine)
         async with get_session(_sf) as _sess:
-            # Look up repo by local_path to get repo_id
             repo_result = await _sess.execute(
                 sa_select(Repository.id).where(
                     Repository.local_path == str(repo_path)
@@ -833,8 +861,6 @@ def init_command(
     state["total_tokens"] = total_tokens
     save_state(repo_path, state)
 
-    # Save config so subsequent `repowise update / serve` picks up the same settings.
-    # Pass exclude_patterns only when the CLI added new ones (preserves existing via round-trip).
     save_config(
         repo_path,
         provider.provider_name,
@@ -844,23 +870,31 @@ def init_command(
         commit_limit=resolved_commit_limit if commit_limit is not None else None,
     )
 
-    # ---- Step 7: Summary ----
-    elapsed = time.monotonic() - start
-    summary = Table(title="Summary")
-    summary.add_column("Metric", style="cyan")
-    summary.add_column("Value", justify="right")
-    summary.add_row("Pages generated", str(len(generated_pages)))
-    summary.add_row("Total tokens", f"{total_tokens:,}")
-    summary.add_row("Elapsed", f"{elapsed:.1f}s")
-    summary.add_row("Provider", provider.provider_name)
-    summary.add_row("Model", provider.model_name)
-    console.print(summary)
-
-    # ---- Step 8: MCP Config ----
+    # ---- Completion ----
     from repowise.cli.mcp_config import format_setup_instructions, save_mcp_config
 
     save_mcp_config(repo_path)
+
+    elapsed = time.monotonic() - start
+
+    _dc_unreachable = sum(1 for f in (dead_code_report.findings if dead_code_report else []) if f.kind.value == "unreachable_file")
+    _dc_unused = sum(1 for f in (dead_code_report.findings if dead_code_report else []) if f.kind.value == "unused_export")
+    _n_decisions = sum(decision_report.by_source.values()) if decision_report else 0
+
+    metrics = [
+        ("Pages generated", str(len(generated_pages))),
+        ("Total tokens", f"{total_tokens:,}"),
+        ("Provider", f"{provider.provider_name} / {provider.model_name}"),
+        ("Elapsed", format_elapsed(elapsed)),
+        ("", ""),
+        ("Dead code", f"{_dc_unreachable} unreachable · {_dc_unused} unused exports"),
+        ("Decisions", str(_n_decisions)),
+    ]
+    if git_summary:
+        metrics.append(("Git history", f"{git_summary.files_indexed} files · {git_summary.hotspots} hotspots"))
+
+    console.print()
+    console.print(build_completion_panel("repowise init complete", metrics))
     console.print()
     console.print(format_setup_instructions(repo_path))
     console.print()
-    console.print("[bold green]Done![/bold green]")

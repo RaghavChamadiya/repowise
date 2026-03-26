@@ -1,4 +1,4 @@
-"""repowise CLI — Click group and command registration."""
+"""repowise CLI — codebase intelligence for developers and AI."""
 
 from __future__ import annotations
 
@@ -22,7 +22,7 @@ from repowise.cli.commands.watch_cmd import watch_command
 @click.group()
 @click.version_option(version=__version__, prog_name="repowise")
 def cli() -> None:
-    """repowise -- AI-powered codebase documentation engine."""
+    """repowise -- codebase intelligence for developers and AI."""
 
 
 cli.add_command(init_command)

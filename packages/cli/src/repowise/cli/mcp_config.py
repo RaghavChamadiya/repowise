@@ -17,7 +17,7 @@ def generate_mcp_config(repo_path: Path) -> dict:
             "repowise": {
                 "command": "repowise",
                 "args": ["mcp", abs_path, "--transport", "stdio"],
-                "description": "repowise: live documentation for this codebase",
+                "description": "repowise: codebase intelligence — docs, graph, git signals, dead code, decisions",
             }
         }
     }
