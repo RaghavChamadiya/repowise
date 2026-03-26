@@ -709,7 +709,15 @@ def init_command(
     ) as gen_progress:
         task_gen = gen_progress.add_task("Generating pages...", total=est.total_pages)
 
+        _pages_done = 0
+
         def on_page_done(page_type: str) -> None:
+            nonlocal _pages_done
+            _pages_done += 1
+            # Update total if actual count exceeds estimate
+            current_total = gen_progress.tasks[task_gen].total or 0
+            if _pages_done > current_total:
+                gen_progress.update(task_gen, total=_pages_done + 5)
             gen_progress.advance(task_gen)
             gen_progress.update(task_gen, description=f"Generating pages... [{page_type}]")
 

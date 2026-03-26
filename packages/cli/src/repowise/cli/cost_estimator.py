@@ -79,6 +79,7 @@ _TOKEN_HEURISTICS: dict[str, tuple[int, int]] = {
     "file_page": (4000, 2500),
     "scc_page": (3000, 2000),
     "module_page": (4000, 2500),
+    "cross_package": (3000, 2000),
     "repo_overview": (5000, 3000),
     "architecture_diagram": (4000, 2500),
     "infra_page": (2000, 1500),
@@ -90,6 +91,7 @@ _COST_TABLE: dict[str, tuple[float, float]] = {
     "gpt-4o": (0.005, 0.015),
     "gpt-4": (0.03, 0.06),
     "gpt-3.5": (0.0005, 0.0015),
+    "gemini": (0.0001, 0.0004),
     "llama": (0.0, 0.0),
     "mock": (0.0, 0.0),
 }
@@ -118,89 +120,98 @@ def build_generation_plan(
     if skip_tests:
         files = [p for p in files if not p.file_info.is_test]
 
-    # Level 0: api_contract
-    api_count = sum(1 for p in files if p.file_info.is_api_contract)
-    if api_count:
-        plans.append(PageTypePlan("api_contract", api_count, 0))
-
-    # Level 1: symbol_spotlight (top percentile public symbols by PageRank)
-    all_public_symbols = []
-    for p in files:
-        for sym in p.symbols:
-            if sym.visibility == "public":
-                all_public_symbols.append((sym, p))
-    n_top_sym = max(1, int(len(all_public_symbols) * config.top_symbol_percentile)) if all_public_symbols else 0
-    if n_top_sym:
-        plans.append(PageTypePlan("symbol_spotlight", n_top_sym, 1))
-
-    # Level 2: file_page (significant code files)
     code_files = [
         p for p in files
         if not p.file_info.is_api_contract
         and not _is_infra_file(p)
         and p.file_info.language in _CODE_LANGUAGES
     ]
-    code_pr_scores = sorted(
-        [pagerank.get(p.file_info.path, 0.0) for p in code_files],
-        reverse=True,
-    )
-    n_top_files = max(1, int(len(code_pr_scores) * config.file_page_top_percentile)) if code_pr_scores else 0
-    pr_threshold = code_pr_scores[n_top_files - 1] if code_pr_scores else 0.0
 
-    file_page_count = sum(
-        1 for p in code_files
-        if _is_significant_file(p, pagerank, betweenness, config, pr_threshold)
-    )
-    if file_page_count:
-        plans.append(PageTypePlan("file_page", file_page_count, 2))
+    # Budget calculation — mirrors page_generator.generate_all() lines 544-564
+    budget = max(50, int(len(files) * config.max_pages_pct))
 
-    # Level 3: scc_page (cycles with len > 1)
+    # Fixed overhead pages (always generated)
+    api_count = sum(1 for p in files if p.file_info.is_api_contract)
     scc_count = sum(1 for scc in sccs if len(scc) > 1)
-    if scc_count:
-        plans.append(PageTypePlan("scc_page", scc_count, 3))
-
-    # Level 4: module_page (top-level directory grouping)
     modules: set[str] = set()
     for p in code_files:
         parts = Path(p.file_info.path).parts
         modules.add(parts[0] if len(parts) > 1 else "root")
-    if modules:
-        plans.append(PageTypePlan("module_page", len(modules), 4))
+    module_count = len(modules)
+    fixed_overhead = api_count + scc_count + module_count + 2  # +2 = repo_overview + arch_diagram
 
-    # Level 6: repo_overview + architecture_diagram
-    plans.append(PageTypePlan("repo_overview", 1, 6))
-    plans.append(PageTypePlan("architecture_diagram", 1, 6))
+    remaining = max(0, budget - fixed_overhead)
 
-    # Level 7: infra_page
+    # File page budget (priority over symbol_spotlight)
+    code_pr_scores = sorted(
+        [pagerank.get(p.file_info.path, 0.0) for p in code_files],
+        reverse=True,
+    )
+    n_file_uncapped = max(1, int(len(code_pr_scores) * config.file_page_top_percentile)) if code_pr_scores else 0
+    n_file_cap = min(n_file_uncapped, remaining)
+    pr_threshold = code_pr_scores[n_file_cap - 1] if code_pr_scores and n_file_cap > 0 else 0.0
+
+    # Actual file_page count: ALL files passing _is_significant_file
+    # (betweenness > 0 and entry_point are independent of the PageRank threshold)
+    file_page_count = sum(
+        1 for p in code_files
+        if _is_significant_file(p, pagerank, betweenness, config, pr_threshold)
+    )
+
+    # Symbol spotlight budget
+    sym_budget = max(0, remaining - n_file_cap)
+    all_public_symbols = [
+        (sym, p)
+        for p in files
+        for sym in p.symbols
+        if sym.visibility == "public"
+    ]
+    n_sym_uncapped = max(1, int(len(all_public_symbols) * config.top_symbol_percentile)) if all_public_symbols else 0
+    n_sym_cap = min(n_sym_uncapped, sym_budget)
+
+    # Infra page count
+    infra_count = 0
     if not skip_infra:
         infra_count = sum(1 for p in files if _is_infra_file(p))
-        if infra_count:
-            plans.append(PageTypePlan("infra_page", infra_count, 7))
 
-    # Global budget cap: total pages ≤ max(50, N_files * max_pages_pct).
-    # Fixed overhead pages (repo_overview, arch, module, scc, api_contract) are
-    # always kept. file_page has priority over symbol_spotlight, which has
-    # priority over infra_page.
-    budget = max(50, int(len(files) * config.max_pages_pct))
-    _FIXED = {"repo_overview", "architecture_diagram", "module_page", "scc_page", "api_contract"}
-    _PRIORITY = ["file_page", "symbol_spotlight", "infra_page"]
+    # Cross-package count (monorepo only — estimate from inter-module edges)
+    cross_package_count = 0
+    try:
+        # Check if monorepo structure exists
+        from repowise.core.ingestion import FileTraverser
+        if len(modules) > 1:
+            # Count distinct cross-module import pairs
+            seen_pairs: set[tuple[str, str]] = set()
+            for u, v in graph.edges():
+                u_parts = Path(u).parts
+                v_parts = Path(v).parts
+                u_mod = u_parts[0] if len(u_parts) > 1 else "root"
+                v_mod = v_parts[0] if len(v_parts) > 1 else "root"
+                if u_mod != v_mod:
+                    pair = (u_mod, v_mod)
+                    if pair not in seen_pairs:
+                        seen_pairs.add(pair)
+            cross_package_count = len(seen_pairs)
+    except Exception:
+        pass
 
-    fixed_plans = [p for p in plans if p.page_type in _FIXED]
-    adjustable = {p.page_type: p for p in plans if p.page_type not in _FIXED}
-    fixed_total = sum(p.count for p in fixed_plans)
-    remaining = max(0, budget - fixed_total)
-
-    if sum(p.count for p in adjustable.values()) > remaining:
-        new_adjustable: list[PageTypePlan] = []
-        left = remaining
-        for pt in _PRIORITY:
-            p = adjustable.get(pt)
-            if p:
-                take = min(p.count, left)
-                if take > 0:
-                    new_adjustable.append(PageTypePlan(pt, take, p.level))
-                left = max(0, left - take)
-        plans = sorted(fixed_plans + new_adjustable, key=lambda p: p.level)
+    # Build plan list
+    if api_count:
+        plans.append(PageTypePlan("api_contract", api_count, 0))
+    if n_sym_cap:
+        plans.append(PageTypePlan("symbol_spotlight", n_sym_cap, 1))
+    if file_page_count:
+        plans.append(PageTypePlan("file_page", file_page_count, 2))
+    if scc_count:
+        plans.append(PageTypePlan("scc_page", scc_count, 3))
+    if module_count:
+        plans.append(PageTypePlan("module_page", module_count, 4))
+    if cross_package_count:
+        plans.append(PageTypePlan("cross_package", cross_package_count, 5))
+    plans.append(PageTypePlan("repo_overview", 1, 6))
+    plans.append(PageTypePlan("architecture_diagram", 1, 6))
+    if infra_count:
+        plans.append(PageTypePlan("infra_page", infra_count, 7))
 
     return plans
 
