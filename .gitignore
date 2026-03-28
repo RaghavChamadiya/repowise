@@ -30,7 +30,6 @@ env/
 
 # uv
 .uv/
-uv.lock
 
 # Testing
 .tox/
@@ -115,6 +114,23 @@ ehthumbs.db
 
 # repowise API keys (local)
 .repowise/.env
+
+# Google service account keys
+awesome-gist-*.json
+
+# Local dev scripts and notes
+CLAUDE.md
+BUILD_STATUS.md
+TESTING_GUIDE.md
+PLAN.md
+run_ingest.py
+run_test.ps1
+smoke_test.py
+provider_config.json
+.mcp.json
+frontend/
+integrations/
+providers/
 
 # Private release notes
 docs/PYPI_RELEASE.md
