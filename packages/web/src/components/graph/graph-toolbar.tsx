@@ -1,0 +1,140 @@
+"use client";
+
+import {
+  Palette,
+  Network,
+  Shield,
+  EyeOff,
+  Maximize,
+  Route,
+  Boxes,
+  GitFork,
+  Skull,
+  Flame,
+  LayoutGrid,
+} from "lucide-react";
+import { Button } from "@/components/ui/button";
+
+export type ColorMode = "language" | "community" | "risk";
+export type ViewMode = "module" | "full" | "architecture" | "dead" | "hotfiles";
+
+interface GraphToolbarProps {
+  viewMode: ViewMode;
+  onViewChange: (mode: ViewMode) => void;
+  colorMode: ColorMode;
+  onColorModeChange: (mode: ColorMode) => void;
+  hideTests: boolean;
+  onHideTestsChange: (v: boolean) => void;
+  onFitView: () => void;
+  showPathFinder: boolean;
+  onTogglePathFinder: () => void;
+}
+
+const VIEW_MODES: { id: ViewMode; icon: typeof Boxes; label: string }[] = [
+  { id: "module", icon: Boxes, label: "Modules" },
+  { id: "full", icon: LayoutGrid, label: "Full Graph" },
+  { id: "architecture", icon: GitFork, label: "Architecture" },
+  { id: "dead", icon: Skull, label: "Dead Code" },
+  { id: "hotfiles", icon: Flame, label: "Hot Files" },
+];
+
+const COLOR_MODES: { id: ColorMode; icon: typeof Palette; label: string }[] = [
+  { id: "language", icon: Palette, label: "Language" },
+  { id: "community", icon: Network, label: "Community" },
+  { id: "risk", icon: Shield, label: "Risk" },
+];
+
+export function GraphToolbar({
+  viewMode,
+  onViewChange,
+  colorMode,
+  onColorModeChange,
+  hideTests,
+  onHideTestsChange,
+  onFitView,
+  showPathFinder,
+  onTogglePathFinder,
+}: GraphToolbarProps) {
+  return (
+    <div className="flex flex-col gap-1.5 items-end">
+      {/* View modes */}
+      <div className="flex gap-0.5 rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-elevated)]/90 backdrop-blur-sm p-1 shadow-lg shadow-black/20">
+        {VIEW_MODES.map((m) => {
+          const Icon = m.icon;
+          const isActive = viewMode === m.id;
+          return (
+            <button
+              key={m.id}
+              onClick={() => onViewChange(m.id)}
+              className={`flex items-center gap-1.5 px-2 py-1.5 rounded-md text-[10px] font-medium transition-all ${
+                isActive
+                  ? "bg-[var(--color-accent-primary)]/15 text-[var(--color-accent-primary)]"
+                  : "text-[var(--color-text-tertiary)] hover:text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-overlay)]"
+              }`}
+              title={m.label}
+            >
+              <Icon className="w-3 h-3" />
+              <span className="hidden lg:inline">{m.label}</span>
+            </button>
+          );
+        })}
+      </div>
+
+      {/* Color mode + actions row */}
+      <div className="flex gap-1.5 items-center">
+        {/* Color modes */}
+        <div className="flex gap-0.5 rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-elevated)]/90 backdrop-blur-sm p-1 shadow-lg shadow-black/20">
+          {COLOR_MODES.map((m) => {
+            const Icon = m.icon;
+            const isActive = colorMode === m.id;
+            return (
+              <button
+                key={m.id}
+                onClick={() => onColorModeChange(m.id)}
+                className={`flex items-center gap-1 px-2 py-1 rounded-md text-[10px] font-medium transition-all ${
+                  isActive
+                    ? "bg-[var(--color-accent-graph)]/15 text-[var(--color-accent-graph)]"
+                    : "text-[var(--color-text-tertiary)] hover:text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-overlay)]"
+                }`}
+                title={m.label}
+              >
+                <Icon className="w-3 h-3" />
+              </button>
+            );
+          })}
+        </div>
+
+        {/* Action buttons */}
+        <div className="flex gap-0.5 rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-elevated)]/90 backdrop-blur-sm p-1 shadow-lg shadow-black/20">
+          <Button
+            size="sm"
+            variant="ghost"
+            onClick={onTogglePathFinder}
+            className={`h-7 w-7 p-0 ${showPathFinder ? "text-[var(--color-accent-graph)]" : "text-[var(--color-text-tertiary)]"}`}
+            title="Find dependency path"
+          >
+            <Route className="w-3.5 h-3.5" />
+          </Button>
+          <Button
+            size="sm"
+            variant="ghost"
+            onClick={() => onHideTestsChange(!hideTests)}
+            className={`h-7 w-7 p-0 ${hideTests ? "text-[var(--color-accent-graph)]" : "text-[var(--color-text-tertiary)]"}`}
+            title={hideTests ? "Show test files" : "Hide test files"}
+          >
+            <EyeOff className="w-3.5 h-3.5" />
+          </Button>
+          <Button
+            size="sm"
+            variant="ghost"
+            onClick={onFitView}
+            className="h-7 w-7 p-0 text-[var(--color-text-tertiary)]"
+            title="Fit view"
+          >
+            <Maximize className="w-3.5 h-3.5" />
+          </Button>
+        </div>
+      </div>
+    </div>
+  );
+}

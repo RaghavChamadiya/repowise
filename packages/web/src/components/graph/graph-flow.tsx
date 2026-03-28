@@ -1,0 +1,515 @@
+"use client";
+
+import {
+  createContext,
+  useCallback,
+  useMemo,
+  useState,
+  useEffect,
+} from "react";
+import {
+  ReactFlow,
+  MiniMap,
+  Controls,
+  Background,
+  BackgroundVariant,
+  ReactFlowProvider,
+  useReactFlow,
+  type NodeMouseHandler,
+  type Node,
+} from "@xyflow/react";
+import "@xyflow/react/dist/style.css";
+import { Loader2, ChevronRight, Home } from "lucide-react";
+import { Skeleton } from "@/components/ui/skeleton";
+import { EmptyState } from "@/components/shared/empty-state";
+import {
+  useModuleGraph,
+  useGraph,
+  useArchitectureGraph,
+  useDeadCodeGraph,
+  useHotFilesGraph,
+} from "@/lib/hooks/use-graph";
+import { ModuleGroupNode } from "./nodes/module-group-node";
+import { FileNode } from "./nodes/file-node";
+import { DependencyEdge } from "./edges/dependency-edge";
+import { groupNodesAsModules } from "./elk-layout";
+import { useModuleElkLayout, useFileElkLayout } from "./use-elk-layout";
+import { PathFinderPanel } from "./path-finder-panel";
+import { GraphToolbar, type ColorMode, type ViewMode } from "./graph-toolbar";
+import { GraphLegend } from "./graph-legend";
+import { GraphContextMenu } from "./graph-context-menu";
+import { languageColor } from "@/lib/utils/confidence";
+
+// ---- Context ----
+
+export interface GraphContextValue {
+  highlightedPath: Set<string>;
+  highlightedEdges: Set<string>;
+  colorMode: ColorMode;
+  riskScores: Map<string, number>;
+}
+
+export const GraphContext = createContext<GraphContextValue>({
+  highlightedPath: new Set(),
+  highlightedEdges: new Set(),
+  colorMode: "language",
+  riskScores: new Map(),
+});
+
+// ---- Node/Edge types ----
+
+const nodeTypes = {
+  moduleGroup: ModuleGroupNode,
+  fileNode: FileNode,
+};
+
+const edgeTypes = {
+  dependency: DependencyEdge,
+};
+
+// ---- Inner component (needs ReactFlowProvider) ----
+
+interface GraphFlowInnerProps {
+  repoId: string;
+  onNodeClick?: (nodeId: string, nodeType: string) => void | Promise<void>;
+  onNodeViewDocs?: (nodeId: string) => void;
+}
+
+function GraphFlowInner({
+  repoId,
+  onNodeClick,
+  onNodeViewDocs,
+}: GraphFlowInnerProps) {
+  const reactFlow = useReactFlow();
+
+  // State
+  const [viewMode, setViewMode] = useState<ViewMode>("module");
+  const [colorMode, setColorMode] = useState<ColorMode>("language");
+  const [hideTests, setHideTests] = useState(false);
+  const [highlightedPath, setHighlightedPath] = useState<Set<string>>(new Set());
+  const [highlightedEdges, setHighlightedEdges] = useState<Set<string>>(new Set());
+  const [showPathFinder, setShowPathFinder] = useState(false);
+
+  // Drill-down: stack of module prefixes. e.g. ["packages", "packages/web"]
+  const [modulePath, setModulePath] = useState<string[]>([]);
+  const currentPrefix = modulePath.length > 0 ? modulePath[modulePath.length - 1] : "";
+  const isDrilledDown = modulePath.length > 0;
+
+  // Context menu
+  const [ctxMenu, setCtxMenu] = useState<{
+    x: number; y: number; nodeId: string; nodeType: string;
+  } | null>(null);
+
+  // Path finder pre-fill
+  const [pathFrom, setPathFrom] = useState("");
+  const [pathTo, setPathTo] = useState("");
+
+  // ---- Data fetching ----
+  const isModuleView = viewMode === "module";
+
+  // Top-level module graph (only when at root of module view)
+  const { graph: moduleGraph, isLoading: moduleLoading } = useModuleGraph(
+    isModuleView && !isDrilledDown ? repoId : null,
+  );
+
+  // Full graph — needed for drill-down and other views
+  const needsFullGraph = isDrilledDown || viewMode === "full";
+  const { graph: fullGraph, isLoading: fullLoading } = useGraph(
+    needsFullGraph ? repoId : null,
+  );
+
+  const { graph: archGraph, isLoading: archLoading } = useArchitectureGraph(
+    viewMode === "architecture" ? repoId : null,
+  );
+  const { graph: deadGraph, isLoading: deadLoading } = useDeadCodeGraph(
+    viewMode === "dead" ? repoId : null,
+  );
+  const { graph: hotGraph, isLoading: hotLoading } = useHotFilesGraph(
+    viewMode === "hotfiles" ? repoId : null,
+  );
+
+  // ---- Derived data ----
+
+  // When drilled down, re-group nodes as sub-modules at the current prefix
+  const drillDownData = useMemo(() => {
+    if (!isDrilledDown || !fullGraph) return null;
+    return groupNodesAsModules(fullGraph.nodes, fullGraph.links, currentPrefix);
+  }, [isDrilledDown, fullGraph, currentPrefix]);
+
+  // File-level graph data — only for non-module views
+  const fileGraphData = useMemo(() => {
+    switch (viewMode) {
+      case "full":
+        return fullGraph ? { nodes: fullGraph.nodes, links: fullGraph.links } : undefined;
+      case "architecture":
+        return archGraph ? { nodes: archGraph.nodes, links: archGraph.links } : undefined;
+      case "dead":
+        return deadGraph ? { nodes: deadGraph.nodes, links: deadGraph.links } : undefined;
+      case "hotfiles":
+        return hotGraph ? { nodes: hotGraph.nodes, links: hotGraph.links } : undefined;
+      default:
+        return undefined;
+    }
+  }, [viewMode, fullGraph, archGraph, deadGraph, hotGraph]);
+
+  // ---- Layout selection ----
+  // Module view (including drill-down) always uses module layout
+  // Other views use file layout
+
+  const moduleLayoutInput = useMemo(() => {
+    if (!isModuleView) return { nodes: undefined, edges: undefined, fileEntries: undefined };
+    if (!isDrilledDown) {
+      return { nodes: moduleGraph?.nodes, edges: moduleGraph?.edges, fileEntries: undefined };
+    }
+    return {
+      nodes: drillDownData?.moduleNodes,
+      edges: drillDownData?.moduleEdges,
+      fileEntries: drillDownData?.fileEntries,
+    };
+  }, [isModuleView, isDrilledDown, moduleGraph, drillDownData]);
+
+  const {
+    nodes: moduleNodes,
+    edges: moduleEdges,
+    isLayouting: moduleLayouting,
+  } = useModuleElkLayout(moduleLayoutInput.nodes, moduleLayoutInput.edges, moduleLayoutInput.fileEntries);
+
+  const {
+    nodes: fileNodes,
+    edges: fileEdges,
+    isLayouting: fileLayouting,
+  } = useFileElkLayout(
+    !isModuleView ? fileGraphData?.nodes : undefined,
+    !isModuleView ? fileGraphData?.links : undefined,
+  );
+
+  const currentNodes = isModuleView ? moduleNodes : fileNodes;
+  const currentEdges = isModuleView ? moduleEdges : fileEdges;
+
+  // Filter hidden tests
+  const filteredNodes = useMemo(() => {
+    if (!hideTests) return currentNodes;
+    return currentNodes.filter((n) => {
+      if (n.type === "fileNode") {
+        return !(n.data as { isTest?: boolean }).isTest;
+      }
+      return true;
+    });
+  }, [currentNodes, hideTests]);
+
+  const isLoading =
+    (isModuleView && !isDrilledDown) ? moduleLoading :
+    isDrilledDown ? fullLoading :
+    viewMode === "full" ? fullLoading :
+    viewMode === "architecture" ? archLoading :
+    viewMode === "dead" ? deadLoading :
+    viewMode === "hotfiles" ? hotLoading : false;
+  const isLayouting = isModuleView ? moduleLayouting : fileLayouting;
+
+  // Context value
+  const ctxValue = useMemo<GraphContextValue>(
+    () => ({
+      highlightedPath,
+      highlightedEdges,
+      colorMode,
+      riskScores: new Map(),
+    }),
+    [highlightedPath, highlightedEdges, colorMode],
+  );
+
+  // ---- Handlers ----
+
+  const handleNodeClick: NodeMouseHandler = useCallback(
+    (_event, node) => {
+      if (node.type === "moduleGroup" && isModuleView) {
+        // Drill into this module — the node ID is the full module path
+        setModulePath((prev) => [...prev, node.id]);
+        return;
+      }
+      // File node or dir group in file view — pass to parent (opens docs)
+      onNodeClick?.(node.id, node.type ?? "fileNode");
+    },
+    [isModuleView, onNodeClick],
+  );
+
+  const handleNodeDoubleClick: NodeMouseHandler = useCallback(
+    (_event, node) => {
+      if (node.type !== "moduleGroup") {
+        onNodeViewDocs?.(node.id);
+      }
+    },
+    [onNodeViewDocs],
+  );
+
+  const handleNodeContextMenu: NodeMouseHandler = useCallback(
+    (event, node) => {
+      event.preventDefault();
+      setCtxMenu({
+        x: (event as unknown as React.MouseEvent).clientX,
+        y: (event as unknown as React.MouseEvent).clientY,
+        nodeId: node.id,
+        nodeType: node.type ?? "fileNode",
+      });
+    },
+    [],
+  );
+
+  useEffect(() => {
+    if (!ctxMenu) return;
+    const close = () => setCtxMenu(null);
+    window.addEventListener("click", close);
+    return () => window.removeEventListener("click", close);
+  }, [ctxMenu]);
+
+  const handlePathFound = useCallback(
+    (pathNodes: string[]) => {
+      setHighlightedPath(new Set(pathNodes));
+      const edgeKeys = new Set<string>();
+      for (let i = 0; i < pathNodes.length - 1; i++) {
+        edgeKeys.add(`${pathNodes[i]}→${pathNodes[i + 1]}`);
+        edgeKeys.add(`${pathNodes[i + 1]}→${pathNodes[i]}`);
+      }
+      setHighlightedEdges(edgeKeys);
+      if (viewMode === "module") {
+        setViewMode("full");
+        setModulePath([]);
+      }
+      setTimeout(() => {
+        const pathRfNodes = pathNodes
+          .map((id) => reactFlow.getNode(id))
+          .filter(Boolean) as Node[];
+        if (pathRfNodes.length > 0) {
+          reactFlow.fitView({ nodes: pathRfNodes, padding: 0.3, duration: 600 });
+        }
+      }, 800);
+    },
+    [viewMode, reactFlow],
+  );
+
+  const handlePathClear = useCallback(() => {
+    setHighlightedPath(new Set());
+    setHighlightedEdges(new Set());
+  }, []);
+
+  const handleFitView = useCallback(() => {
+    reactFlow.fitView({ padding: 0.15, duration: 400 });
+  }, [reactFlow]);
+
+  const handleViewChange = useCallback((v: ViewMode) => {
+    setViewMode(v);
+    setModulePath([]);
+    setHighlightedPath(new Set());
+    setHighlightedEdges(new Set());
+  }, []);
+
+  // Breadcrumb
+  const handleBreadcrumbClick = useCallback((index: number) => {
+    if (index < 0) {
+      setModulePath([]);
+    } else {
+      setModulePath((prev) => prev.slice(0, index + 1));
+    }
+  }, []);
+
+  // Context menu actions
+  const handleCtxViewDocs = useCallback(() => {
+    if (ctxMenu) onNodeViewDocs?.(ctxMenu.nodeId);
+    setCtxMenu(null);
+  }, [ctxMenu, onNodeViewDocs]);
+
+  const handleCtxExplore = useCallback(() => {
+    if (ctxMenu) {
+      if (ctxMenu.nodeType === "moduleGroup" && isModuleView) {
+        setModulePath((prev) => [...prev, ctxMenu.nodeId]);
+      } else {
+        onNodeClick?.(ctxMenu.nodeId, ctxMenu.nodeType);
+      }
+    }
+    setCtxMenu(null);
+  }, [ctxMenu, isModuleView, onNodeClick]);
+
+  const handleCtxPathFrom = useCallback(() => {
+    if (ctxMenu) { setPathFrom(ctxMenu.nodeId); setShowPathFinder(true); }
+    setCtxMenu(null);
+  }, [ctxMenu]);
+
+  const handleCtxPathTo = useCallback(() => {
+    if (ctxMenu) { setPathTo(ctxMenu.nodeId); setShowPathFinder(true); }
+    setCtxMenu(null);
+  }, [ctxMenu]);
+
+  const minimapNodeColor = useCallback(
+    (node: Node) => {
+      if (node.type === "moduleGroup") {
+        const pct = (node.data as { docCoveragePct?: number }).docCoveragePct;
+        if (pct != null) return pct >= 0.7 ? "#22c55e" : pct >= 0.3 ? "#f59520" : "#ef4444";
+        return "#3b82f6";
+      }
+      const lang = (node.data as { language?: string }).language;
+      return lang ? languageColor(lang) : "#8b5cf6";
+    },
+    [],
+  );
+
+  if (isLoading) return <Skeleton className="h-full w-full rounded-lg" />;
+
+  if (filteredNodes.length === 0 && !isLayouting) {
+    return (
+      <EmptyState
+        title="No graph data"
+        description="Check that the backend is running and this repo has been indexed."
+      />
+    );
+  }
+
+  return (
+    <GraphContext.Provider value={ctxValue}>
+      <div className="relative w-full h-full">
+        {isLayouting && (
+          <div className="absolute inset-0 z-50 flex items-center justify-center bg-[var(--color-bg-root)]/60 backdrop-blur-sm rounded-lg">
+            <div className="flex items-center gap-3 text-sm text-[var(--color-text-secondary)]">
+              <Loader2 className="w-5 h-5 animate-spin text-[var(--color-accent-graph)]" />
+              Computing layout...
+            </div>
+          </div>
+        )}
+
+        <ReactFlow
+          nodes={filteredNodes}
+          edges={currentEdges}
+          nodeTypes={nodeTypes}
+          edgeTypes={edgeTypes}
+          onNodeClick={handleNodeClick}
+          onNodeDoubleClick={handleNodeDoubleClick}
+          onNodeContextMenu={handleNodeContextMenu}
+          fitView
+          fitViewOptions={{ padding: 0.15 }}
+          minZoom={0.02}
+          maxZoom={4}
+          proOptions={{ hideAttribution: true }}
+          className="!bg-transparent"
+          nodesDraggable={false}
+          defaultEdgeOptions={{ type: "dependency" }}
+        >
+          <Background variant={BackgroundVariant.Dots} gap={20} size={1} color="rgba(255,255,255,0.04)" />
+          <Controls
+            showInteractive={false}
+            className="!border-[var(--color-border-default)] !bg-[var(--color-bg-elevated)] !shadow-lg !shadow-black/20 [&>button]:!border-[var(--color-border-default)] [&>button]:!bg-[var(--color-bg-elevated)] [&>button]:!text-[var(--color-text-secondary)] [&>button:hover]:!bg-[var(--color-bg-overlay)] [&>button:hover]:!text-[var(--color-text-primary)]"
+          />
+          <MiniMap
+            nodeColor={minimapNodeColor}
+            maskColor="rgba(0, 0, 0, 0.6)"
+            className="!bg-[var(--color-bg-surface)] !border-[var(--color-border-default)] !shadow-lg !shadow-black/20 !rounded-lg"
+            pannable
+            zoomable
+          />
+        </ReactFlow>
+
+        {/* Breadcrumb — shown when drilled into a module */}
+        {isModuleView && isDrilledDown && (
+          <div className="absolute top-3 left-3 z-10">
+            <div className="flex items-center gap-1 rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-elevated)]/90 backdrop-blur-sm px-2.5 py-1.5 shadow-lg shadow-black/20">
+              <button
+                onClick={() => handleBreadcrumbClick(-1)}
+                className="flex items-center gap-1 text-[11px] text-[var(--color-text-tertiary)] hover:text-[var(--color-accent-graph)] transition-colors"
+              >
+                <Home className="w-3 h-3" />
+                <span>Root</span>
+              </button>
+              {modulePath.map((fullPrefix, i) => {
+                // Show only the segment added at this level
+                const prevPrefix = i > 0 ? modulePath[i - 1] + "/" : "";
+                const label = fullPrefix.slice(prevPrefix.length);
+                const isLast = i === modulePath.length - 1;
+                return (
+                  <span key={i} className="flex items-center gap-1">
+                    <ChevronRight className="w-3 h-3 text-[var(--color-text-tertiary)]" />
+                    <button
+                      onClick={() => !isLast && handleBreadcrumbClick(i)}
+                      className={`text-[11px] font-mono transition-colors ${
+                        isLast
+                          ? "text-[var(--color-text-primary)] font-medium cursor-default"
+                          : "text-[var(--color-text-tertiary)] hover:text-[var(--color-accent-graph)]"
+                      }`}
+                    >
+                      {label}
+                    </button>
+                  </span>
+                );
+              })}
+            </div>
+          </div>
+        )}
+
+        {/* Toolbar */}
+        <div className="absolute top-3 right-3 z-10">
+          <GraphToolbar
+            viewMode={viewMode}
+            onViewChange={handleViewChange}
+            colorMode={colorMode}
+            onColorModeChange={setColorMode}
+            hideTests={hideTests}
+            onHideTestsChange={setHideTests}
+            onFitView={handleFitView}
+            showPathFinder={showPathFinder}
+            onTogglePathFinder={() => setShowPathFinder((s) => !s)}
+          />
+        </div>
+
+        {/* Path Finder */}
+        {showPathFinder && (
+          <div className="absolute top-14 right-3 z-10">
+            <PathFinderPanel
+              repoId={repoId}
+              onPathFound={handlePathFound}
+              onClear={handlePathClear}
+              onClose={() => setShowPathFinder(false)}
+              initialFrom={pathFrom}
+              initialTo={pathTo}
+            />
+          </div>
+        )}
+
+        {/* Legend */}
+        <div className="absolute bottom-3 left-3 z-10">
+          <GraphLegend
+            nodeCount={filteredNodes.length}
+            edgeCount={currentEdges.length}
+            colorMode={colorMode}
+            viewMode={viewMode}
+          />
+        </div>
+
+        {/* Context menu */}
+        {ctxMenu && (
+          <GraphContextMenu
+            x={ctxMenu.x}
+            y={ctxMenu.y}
+            nodeId={ctxMenu.nodeId}
+            isModule={ctxMenu.nodeType === "moduleGroup"}
+            onViewDocs={handleCtxViewDocs}
+            onExplore={handleCtxExplore}
+            onPathFrom={handleCtxPathFrom}
+            onPathTo={handleCtxPathTo}
+          />
+        )}
+      </div>
+    </GraphContext.Provider>
+  );
+}
+
+// ---- Public component ----
+
+export interface GraphFlowProps {
+  repoId: string;
+  onNodeClick?: (nodeId: string, nodeType: string) => void | Promise<void>;
+  onNodeViewDocs?: (nodeId: string) => void;
+}
+
+export function GraphFlow(props: GraphFlowProps) {
+  return (
+    <ReactFlowProvider>
+      <GraphFlowInner {...props} />
+    </ReactFlowProvider>
+  );
+}

@@ -50,6 +50,14 @@ def _parse_imported_names(raw: str | None) -> list[str]:
         return []
 
 
+async def _get_documented_paths(session: AsyncSession, repo_id: str) -> set[str]:
+    """Return the set of node_ids (file paths) that have a wiki page."""
+    result = await session.execute(
+        select(Page.target_path).where(Page.repository_id == repo_id)
+    )
+    return {row.target_path for row in result.all() if row.target_path}
+
+
 # ---------------------------------------------------------------------------
 # Module graph
 # ---------------------------------------------------------------------------
@@ -204,6 +212,8 @@ async def ego_graph(
     git_row = git_result.scalar_one_or_none()
     git_meta = GitMetadataResponse.from_orm(git_row) if git_row else None
 
+    documented = await _get_documented_paths(session, repo_id)
+
     node_responses = [
         GraphNodeResponse(
             node_id=n.node_id,
@@ -215,6 +225,7 @@ async def ego_graph(
             community_id=n.community_id,
             is_test=n.is_test,
             is_entry_point=n.is_entry_point,
+            has_doc=n.node_id in documented,
         )
         for n in node_rows
     ]
@@ -284,6 +295,8 @@ async def entry_points_graph(
     )
     nodes = node_result.scalars().all()
 
+    documented = await _get_documented_paths(session, repo_id)
+
     node_responses = [
         GraphNodeResponse(
             node_id=n.node_id,
@@ -295,6 +308,7 @@ async def entry_points_graph(
             community_id=n.community_id,
             is_test=n.is_test,
             is_entry_point=n.is_entry_point,
+            has_doc=n.node_id in documented,
         )
         for n in nodes
     ]
@@ -383,6 +397,7 @@ async def dead_code_graph(
         neighbor_nodes = []
 
     all_node_ids = dead_node_ids | neighbor_ids
+    documented = await _get_documented_paths(session, repo_id)
 
     def _to_dead_node(n: GraphNode, confidence_group: str) -> DeadCodeGraphNodeResponse:
         return DeadCodeGraphNodeResponse(
@@ -395,6 +410,7 @@ async def dead_code_graph(
             community_id=n.community_id,
             is_test=n.is_test,
             is_entry_point=n.is_entry_point,
+            has_doc=n.node_id in documented,
             confidence_group=confidence_group,
         )
 
@@ -493,6 +509,7 @@ async def hot_files_graph(
         neighbor_nodes = []
 
     all_node_ids = hot_node_ids | neighbor_ids
+    documented = await _get_documented_paths(session, repo_id)
 
     def _to_hot_node(n: GraphNode, commit_count: int) -> HotFilesNodeResponse:
         return HotFilesNodeResponse(
@@ -505,6 +522,7 @@ async def hot_files_graph(
             community_id=n.community_id,
             is_test=n.is_test,
             is_entry_point=n.is_entry_point,
+            has_doc=n.node_id in documented,
             commit_count=commit_count,
         )
 
@@ -581,6 +599,8 @@ async def export_graph(
     )
     edges = edge_result.scalars().all()
 
+    documented = await _get_documented_paths(session, repo_id)
+
     node_responses = [
         GraphNodeResponse(
             node_id=n.node_id,
@@ -592,6 +612,7 @@ async def export_graph(
             community_id=n.community_id,
             is_test=n.is_test,
             is_entry_point=n.is_entry_point,
+            has_doc=n.node_id in documented,
         )
         for n in nodes
     ]

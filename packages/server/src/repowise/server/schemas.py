@@ -263,6 +263,7 @@ class GraphNodeResponse(BaseModel):
     community_id: int
     is_test: bool = False
     is_entry_point: bool = False
+    has_doc: bool = False
 
 
 class GraphEdgeResponse(BaseModel):
@@ -478,6 +479,7 @@ class DeadCodeGraphNodeResponse(BaseModel):
     community_id: int
     is_test: bool = False
     is_entry_point: bool = False
+    has_doc: bool = False
     confidence_group: str  # "certain" | "likely"
 
 
@@ -501,6 +503,7 @@ class HotFilesNodeResponse(BaseModel):
     community_id: int
     is_test: bool = False
     is_entry_point: bool = False
+    has_doc: bool = False
     commit_count: int
 
 

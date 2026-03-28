@@ -55,6 +55,16 @@
   --color-info: #5b9cf6;
 
   /* ------------------------------------------------------------------ */
+  /* Graph — React Flow                                                  */
+  /* ------------------------------------------------------------------ */
+  --color-accent-graph: #f59520;
+  --color-risk-low: #22c55e;
+  --color-risk-medium: #f59520;
+  --color-risk-high: #ef4444;
+  --color-node-documented: #22c55e;
+  --color-node-undocumented: #64748b;
+
+  /* ------------------------------------------------------------------ */
   /* Language Colors (graph nodes)                                       */
   /* ------------------------------------------------------------------ */
   --color-lang-python: #3776ab;
@@ -264,4 +274,32 @@ body {
 
 .tabular-nums {
   font-variant-numeric: tabular-nums;
+}
+
+/* -------------------------------------------------------------------- */
+/* React Flow Dark Theme                                                 */
+/* -------------------------------------------------------------------- */
+
+.react-flow {
+  --xy-background-color: transparent;
+  --xy-minimap-background-color: var(--color-bg-surface);
+  --xy-minimap-mask-background: rgba(0, 0, 0, 0.6);
+  --xy-minimap-mask-stroke: none;
+  --xy-controls-button-background-color: var(--color-bg-elevated);
+  --xy-controls-button-background-color-hover: var(--color-bg-overlay);
+  --xy-controls-button-border-color: var(--color-border-default);
+  --xy-controls-button-color: var(--color-text-secondary);
+  --xy-controls-button-color-hover: var(--color-text-primary);
+  --xy-edge-stroke: rgba(91, 156, 246, 0.3);
+  --xy-edge-stroke-selected: var(--color-accent-graph);
+  --xy-node-border-radius: var(--radius-lg);
+}
+
+@keyframes graph-path-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(245, 149, 32, 0.4); }
+  50% { box-shadow: 0 0 12px 4px rgba(245, 149, 32, 0.2); }
+}
+
+@keyframes graph-marching-ants {
+  to { stroke-dashoffset: -20; }
 }

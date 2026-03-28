@@ -176,6 +176,7 @@ export interface GraphNodeResponse {
   community_id: number;
   is_test: boolean;
   is_entry_point: boolean;
+  has_doc: boolean;
 }
 
 export interface GraphEdgeResponse {
@@ -190,9 +191,10 @@ export interface GraphExportResponse {
 }
 
 export interface GraphPathResponse {
-  path: Array<{ node: string; relationship: string; edge_type: string }>;
+  path: string[];
   distance: number;
   explanation: string;
+  visual_context?: unknown;
 }
 
 export interface ModuleNodeResponse {
@@ -239,6 +241,7 @@ export interface DeadCodeGraphNodeResponse {
   community_id: number;
   is_test: boolean;
   is_entry_point: boolean;
+  has_doc: boolean;
   confidence_group: string;
 }
 
@@ -257,6 +260,7 @@ export interface HotFilesNodeResponse {
   community_id: number;
   is_test: boolean;
   is_entry_point: boolean;
+  has_doc: boolean;
   commit_count: number;
 }
 
