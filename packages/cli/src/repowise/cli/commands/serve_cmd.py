@@ -58,19 +58,24 @@ def _find_local_web() -> Path | None:
 
 def _download_web(version: str) -> bool:
     """Download pre-built web frontend from GitHub releases."""
-    import urllib.request
-    import urllib.error
+    import httpx
 
     tag = f"v{version}"
     url = f"https://github.com/{_GITHUB_REPO}/releases/download/{tag}/repowise-web.tar.gz"
 
-    console.print(f"[dim]Downloading web UI from {url}...[/dim]")
+    console.print(f"[dim]Downloading web UI ({url})...[/dim]")
     try:
+        tmp_path = None
         with tempfile.NamedTemporaryFile(suffix=".tar.gz", delete=False) as tmp:
-            urllib.request.urlretrieve(url, tmp.name)
             tmp_path = tmp.name
-    except (urllib.error.URLError, urllib.error.HTTPError) as exc:
+            with httpx.stream("GET", url, follow_redirects=True, timeout=120) as resp:
+                resp.raise_for_status()
+                for chunk in resp.iter_bytes(chunk_size=65536):
+                    tmp.write(chunk)
+    except (httpx.HTTPStatusError, httpx.RequestError) as exc:
         console.print(f"[yellow]Could not download web UI: {exc}[/yellow]")
+        if tmp_path:
+            os.unlink(tmp_path)
         return False
 
     try:
