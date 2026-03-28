@@ -1,42 +1,6 @@
-[build-system]
-requires = ["hatchling"]
-build-backend = "hatchling.build"
-
-[project]
-name = "repowise-server"
-version = "0.1.0"
-description = "repowise server — FastAPI REST API, webhook handlers, and MCP server"
-readme = "README.md"
-requires-python = ">=3.11"
-license = { text = "Apache-2.0" }
-keywords = ["documentation", "api", "mcp", "fastapi", "webhooks"]
-classifiers = [
-    "Development Status :: 3 - Alpha",
-    "Intended Audience :: Developers",
-    "License :: OSI Approved :: Apache Software License",
-    "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.11",
-    "Programming Language :: Python :: 3.12",
-    "Programming Language :: Python :: 3.13",
-    "Framework :: FastAPI",
-    "Topic :: Software Development :: Documentation",
-]
-dependencies = [
-    "repowise-core",
-    # Web framework
-    "fastapi>=0.115,<1",
-    "uvicorn[standard]>=0.32,<1",
-    # MCP Python SDK
-    "mcp>=1.0,<2",
-    # Background task scheduling
-    "apscheduler>=3.10,<4",
-    # Webhook signature verification
-    "cryptography>=43,<44",
-]
-
-[project.urls]
-Homepage = "https://github.com/repowise-ai/repowise"
-Repository = "https://github.com/repowise-ai/repowise"
+# ---------------------------------------------------------------------------
+# repowise-server — per-package config (packaging is handled by root pyproject.toml)
+# ---------------------------------------------------------------------------
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/repowise"]

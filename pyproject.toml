@@ -1,3 +1,152 @@
+# ---------------------------------------------------------------------------
+# repowise — unified PyPI package
+# ---------------------------------------------------------------------------
+[build-system]
+requires = ["setuptools>=75"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "repowise"
+version = "0.1.1"
+description = "Codebase intelligence for developers and AI — generates and maintains a structured wiki for any codebase"
+readme = "README.md"
+requires-python = ">=3.11"
+license = "AGPL-3.0-only"
+keywords = ["documentation", "codebase", "wiki", "llm", "ai", "mcp"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Environment :: Console",
+    "Framework :: FastAPI",
+    "Topic :: Software Development :: Documentation",
+    "Typing :: Typed",
+]
+
+# ---------------------------------------------------------------------------
+# Core dependencies — everything needed for analysis + generation + CLI + server.
+# LLM/embedding provider SDKs are optional (see [project.optional-dependencies]).
+# ---------------------------------------------------------------------------
+dependencies = [
+    # HTTP client
+    "httpx>=0.27,<1",
+    # AST parsing
+    "tree-sitter>=0.23,<1",
+    "tree-sitter-python>=0.23,<1",
+    "tree-sitter-typescript>=0.23,<1",
+    "tree-sitter-javascript>=0.23,<1",
+    "tree-sitter-go>=0.23,<1",
+    "tree-sitter-rust>=0.23,<1",
+    "tree-sitter-java>=0.23,<1",
+    "tree-sitter-cpp>=0.23,<1",
+    # Dependency graph
+    "networkx>=3.3,<4",
+    "scipy>=1.11,<2",
+    # Template rendering
+    "jinja2>=3.1,<4",
+    # File filtering
+    "pathspec>=0.12,<1",
+    # Structured logging
+    "structlog>=24,<25",
+    # Database (async)
+    "sqlalchemy[asyncio]>=2.0,<3",
+    "aiosqlite>=0.20,<1",
+    "alembic>=1.13,<2",
+    # Data validation
+    "pydantic>=2.8,<3",
+    # Retry logic
+    "tenacity>=9,<10",
+    # Git operations
+    "gitpython>=3.1,<4",
+    # YAML parsing
+    "pyyaml>=6.0,<7",
+    # Vector search (LanceDB — pure Python wheel)
+    "lancedb>=0.12,<1",
+    # CLI
+    "click>=8.1,<9",
+    "rich>=13,<14",
+    "watchdog>=4,<5",
+    # Server
+    "fastapi>=0.115,<1",
+    "uvicorn[standard]>=0.32,<1",
+    "mcp>=1.0,<2",
+    "apscheduler>=3.10,<4",
+    "cryptography>=43,<44",
+]
+
+[project.optional-dependencies]
+anthropic = ["anthropic>=0.40,<1"]
+openai = ["openai>=1.50,<2"]
+gemini = ["google-genai>=1.0,<2"]
+litellm = ["litellm>=1.50,<2"]
+postgres = [
+    "pgvector>=0.3,<1",
+    "asyncpg>=0.29,<1",
+]
+all = [
+    "repowise[anthropic,openai,gemini,litellm,postgres]",
+]
+dev = [
+    "pytest>=8,<9",
+    "pytest-asyncio>=0.23,<1",
+    "pytest-snapshot>=0.9,<1",
+    "respx>=0.21,<1",
+    "time-machine>=2.14,<3",
+    "ruff>=0.6,<1",
+    "mypy>=1.11,<2",
+    "types-networkx>=3.3,<4",
+    "build>=1.0",
+]
+
+[project.scripts]
+repowise = "repowise.cli.main:cli"
+
+[project.urls]
+Homepage = "https://github.com/RaghavChamadiya/repowise"
+Repository = "https://github.com/RaghavChamadiya/repowise"
+Issues = "https://github.com/RaghavChamadiya/repowise/issues"
+Documentation = "https://github.com/RaghavChamadiya/repowise/blob/main/docs/USER_GUIDE.md"
+
+# ---------------------------------------------------------------------------
+# setuptools — explicit package-dir mapping across three src/ directories
+# ---------------------------------------------------------------------------
+[tool.setuptools.package-dir]
+"repowise.core" = "packages/core/src/repowise/core"
+"repowise.cli" = "packages/cli/src/repowise/cli"
+"repowise.server" = "packages/server/src/repowise/server"
+
+[tool.setuptools]
+packages = [
+    # core
+    "repowise.core",
+    "repowise.core.analysis",
+    "repowise.core.generation",
+    "repowise.core.generation.editor_files",
+    "repowise.core.ingestion",
+    "repowise.core.ingestion.parsers",
+    "repowise.core.persistence",
+    "repowise.core.providers",
+    "repowise.core.providers.llm",
+    "repowise.core.providers.embedding",
+    # cli
+    "repowise.cli",
+    "repowise.cli.commands",
+    # server
+    "repowise.server",
+    "repowise.server.routers",
+    "repowise.server.mcp_server",
+]
+
+[tool.setuptools.package-data]
+"repowise.core.ingestion" = ["queries/*.scm"]
+"repowise.core.generation" = ["templates/*.j2"]
+
+# ---------------------------------------------------------------------------
+# uv workspace (kept for local development)
+# ---------------------------------------------------------------------------
 [tool.uv.workspace]
 members = [
     "packages/core",

@@ -36,7 +36,7 @@ from .models import FileInfo, Import, ParsedFile, Symbol
 
 log = structlog.get_logger(__name__)
 
-QUERIES_DIR = Path(__file__).parent.parent.parent.parent.parent / "queries"
+QUERIES_DIR = Path(__file__).parent / "queries"
 
 # Languages that intentionally have no AST parser.  These are data, config,
 # markup, or query files — there are no code symbols to extract, and that is

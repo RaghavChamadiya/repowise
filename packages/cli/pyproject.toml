@@ -1,43 +1,6 @@
-[build-system]
-requires = ["hatchling"]
-build-backend = "hatchling.build"
-
-[project]
-name = "repowise-cli"
-version = "0.1.0"
-description = "repowise CLI — generate and maintain codebase documentation from the command line"
-readme = "README.md"
-requires-python = ">=3.11"
-license = { text = "Apache-2.0" }
-keywords = ["documentation", "codebase", "wiki", "cli"]
-classifiers = [
-    "Development Status :: 3 - Alpha",
-    "Intended Audience :: Developers",
-    "License :: OSI Approved :: Apache Software License",
-    "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.11",
-    "Programming Language :: Python :: 3.12",
-    "Programming Language :: Python :: 3.13",
-    "Environment :: Console",
-    "Topic :: Software Development :: Documentation",
-]
-dependencies = [
-    "repowise-core",
-    "repowise-server",
-    # CLI framework
-    "click>=8.1,<9",
-    # Terminal formatting
-    "rich>=13,<14",
-    # Filesystem watching (for `repowise watch`)
-    "watchdog>=4,<5",
-]
-
-[project.scripts]
-repowise = "repowise.cli.main:cli"
-
-[project.urls]
-Homepage = "https://github.com/repowise-ai/repowise"
-Repository = "https://github.com/repowise-ai/repowise"
+# ---------------------------------------------------------------------------
+# repowise-cli — per-package config (packaging is handled by root pyproject.toml)
+# ---------------------------------------------------------------------------
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/repowise"]

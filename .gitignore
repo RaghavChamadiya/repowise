@@ -114,3 +114,6 @@ ehthumbs.db
 
 # repowise API keys (local)
 .repowise/.env
+
+# Private release notes
+docs/PYPI_RELEASE.md

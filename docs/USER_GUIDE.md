@@ -1,0 +1,777 @@
+# Repowise User Guide
+
+Everything you need to know to install, use, and get the most out of repowise.
+
+---
+
+## Table of Contents
+
+1. [Installation](#installation)
+2. [Getting Started](#getting-started)
+3. [CLI Command Reference](#cli-command-reference)
+   - [init](#repowise-init)
+   - [update](#repowise-update)
+   - [watch](#repowise-watch)
+   - [search](#repowise-search)
+   - [mcp](#repowise-mcp)
+   - [serve](#repowise-serve)
+   - [dead-code](#repowise-dead-code)
+   - [decision](#repowise-decision)
+   - [generate-claude-md](#repowise-generate-claude-md)
+   - [export](#repowise-export)
+   - [reindex](#repowise-reindex)
+   - [status](#repowise-status)
+   - [doctor](#repowise-doctor)
+4. [Web UI](#web-ui)
+5. [MCP Integration with AI Editors](#mcp-integration-with-ai-editors)
+6. [Environment Variables](#environment-variables)
+7. [Common Workflows](#common-workflows)
+8. [Troubleshooting](#troubleshooting)
+
+---
+
+## Installation
+
+### From PyPI
+
+```bash
+pip install repowise
+```
+
+This installs the core engine, CLI, server, and MCP tools. No LLM provider SDK is included by default — install only the one you need:
+
+```bash
+pip install "repowise[anthropic]"    # Claude (Anthropic)
+pip install "repowise[openai]"       # GPT (OpenAI)
+pip install "repowise[gemini]"       # Gemini (Google)
+pip install "repowise[litellm]"      # 100+ providers via LiteLLM (Together, Groq, Azure, Bedrock, etc.)
+pip install "repowise[all]"          # All LLM providers + PostgreSQL support
+```
+
+If you plan to use PostgreSQL instead of the default SQLite:
+
+```bash
+pip install "repowise[postgres]"
+```
+
+### Requirements
+
+- Python 3.11 or later
+- Git (repowise analyzes your repository's git history)
+- An LLM API key (for documentation generation — not needed for analysis-only mode)
+
+### Verify Installation
+
+```bash
+repowise --version
+repowise --help
+```
+
+---
+
+## Getting Started
+
+### 1. Set your API key
+
+```bash
+# Pick one:
+export ANTHROPIC_API_KEY="sk-ant-..."
+export OPENAI_API_KEY="sk-..."
+export GEMINI_API_KEY="..."
+```
+
+On Windows PowerShell:
+
+```powershell
+$env:ANTHROPIC_API_KEY = "sk-ant-..."
+```
+
+### 2. Initialize your codebase
+
+```bash
+cd /path/to/your-repo
+repowise init
+```
+
+In interactive mode, repowise asks you to choose:
+
+- **Index-only** — free, no LLM. Parses code, builds dependency graph, indexes git history. Useful for analysis without documentation generation.
+- **Full** — uses your chosen LLM to generate human-readable wiki pages for every file and module.
+- **Advanced** — fine-tune every option (concurrency, exclusions, commit limits, etc.)
+
+A typical first run on a medium codebase (~500 files) takes 5-15 minutes and costs $1-5 depending on the provider.
+
+### 3. Start using the wiki
+
+After init completes, you have several ways to access the generated documentation:
+
+```bash
+repowise search "authentication"     # Search from the terminal
+repowise serve                       # Browse in a web UI at localhost:7337
+repowise mcp                         # Connect to Claude Code, Cursor, etc.
+```
+
+### What gets created
+
+```
+your-repo/
+├── .repowise/
+│   ├── wiki.db           # SQLite database with all pages, symbols, graph, git data
+│   ├── state.json        # Sync metadata (last commit, pages, tokens used)
+│   ├── config.yaml       # Saved configuration (provider, model, excludes)
+│   ├── .env              # Saved API keys (gitignored)
+│   └── lancedb/          # Vector store for semantic search
+└── CLAUDE.md             # Auto-generated codebase context for AI editors
+```
+
+---
+
+## CLI Command Reference
+
+### `repowise init`
+
+Generate complete wiki documentation for a codebase. This is the starting point.
+
+```bash
+repowise init [PATH]
+```
+
+**What it does (4 phases):**
+
+1. **Ingestion** — walks every file, parses AST with tree-sitter, builds a dependency graph, indexes git history (churn, hotspots, ownership, bus factor)
+2. **Analysis** — detects dead code, extracts architectural decisions from inline markers, READMEs, and git history
+3. **Generation** — sends structured prompts to the LLM, generates file-level, module-level, and repo-level wiki pages, plus architecture diagrams
+4. **Persistence** — stores everything in `.repowise/wiki.db`, builds search indexes, generates `CLAUDE.md`
+
+**Options:**
+
+| Flag | Description |
+|------|-------------|
+| `--provider` | LLM provider: `anthropic`, `openai`, `gemini`, `ollama`, `mock`. Auto-detected from env vars if not set. |
+| `--model` | Model name override (e.g., `claude-sonnet-4-6`, `gpt-5.4-nano`) |
+| `--embedder` | Embedder for semantic search: `gemini`, `openai`, `mock`. Auto-detected from env vars. |
+| `--index-only` | Skip LLM generation entirely. Only parse, build graph, and index git. Free. |
+| `--dry-run` | Show generation plan and cost estimate without running anything. |
+| `--test-run` | Generate docs for only the top 10 files (by PageRank) — quick validation. |
+| `--skip-tests` | Exclude test files from documentation generation. |
+| `--skip-infra` | Exclude infrastructure files (Dockerfiles, Makefiles, Terraform, shell scripts). |
+| `--exclude / -x` | Gitignore-style exclusion patterns. Repeatable: `-x vendor/ -x "*.generated.*"` |
+| `--concurrency` | Max concurrent LLM calls (default: 5). Higher = faster but more API pressure. |
+| `--resume` | Resume from the last checkpoint if a previous run was interrupted. |
+| `--force` | Regenerate all pages even if they already exist. |
+| `--commit-limit` | Max commits to analyze per file (default: 500, max: 5000). Saved to config. |
+| `--follow-renames` | Track file renames in git history (slower but more accurate). |
+| `--no-claude-md` | Don't generate `CLAUDE.md` at the end. |
+| `--yes / -y` | Skip cost confirmation prompt (auto-confirms if cost > $2). |
+
+**Examples:**
+
+```bash
+# Interactive mode (asks questions)
+repowise init
+
+# Fully automated
+repowise init --provider anthropic --model claude-sonnet-4-6 --yes
+
+# Just index, no LLM cost
+repowise init --index-only
+
+# Preview what will happen
+repowise init --provider openai --dry-run
+
+# Quick test with 10 files
+repowise init --provider gemini --test-run
+
+# Exclude vendor and generated code
+repowise init -x vendor/ -x "*.gen.go" -x "**/__generated__/**"
+```
+
+---
+
+### `repowise update`
+
+Incrementally update wiki pages for files that changed since the last sync.
+
+```bash
+repowise update [PATH]
+```
+
+Much faster and cheaper than a full `init` — only regenerates pages for changed files and their dependents.
+
+**How it works:**
+
+1. Diffs `HEAD` against the last sync commit (stored in `state.json`)
+2. Re-parses changed files and rebuilds the dependency graph
+3. Determines affected pages (direct changes + dependents via cascade analysis)
+4. Regenerates only those pages
+5. Updates `state.json` and `CLAUDE.md`
+
+**Options:**
+
+| Flag | Description |
+|------|-------------|
+| `--provider` | Override LLM provider for this run |
+| `--model` | Override model |
+| `--since` | Git ref to diff from (overrides `state.json`). Example: `--since v1.0.0` |
+| `--cascade-budget` | Max pages to regenerate per run (default: 30). Prevents runaway regeneration. |
+| `--dry-run` | Show what would be updated without regenerating. |
+
+**Examples:**
+
+```bash
+# Update after pulling changes
+git pull
+repowise update
+
+# See what changed without regenerating
+repowise update --dry-run
+
+# Update since a specific tag
+repowise update --since v2.0.0
+
+# Limit regeneration scope
+repowise update --cascade-budget 10
+```
+
+---
+
+### `repowise watch`
+
+Watch for file changes and automatically update wiki pages.
+
+```bash
+repowise watch [PATH]
+```
+
+Runs continuously. Uses filesystem events (via watchdog) to detect saves, debounces them, and triggers `repowise update` automatically. Press `Ctrl+C` to stop.
+
+**Options:**
+
+| Flag | Description |
+|------|-------------|
+| `--provider` | LLM provider |
+| `--model` | Model override |
+| `--debounce` | Debounce delay in milliseconds (default: 2000). Collects changes for this long before triggering an update. |
+
+**Example:**
+
+```bash
+# Start watching — wiki syncs as you code
+repowise watch --debounce 3000
+```
+
+---
+
+### `repowise search`
+
+Search wiki pages by keyword, meaning, or symbol name.
+
+```bash
+repowise search QUERY [PATH]
+```
+
+**Options:**
+
+| Flag | Description |
+|------|-------------|
+| `--mode` | Search mode: `fulltext` (default), `semantic`, `symbol` |
+| `--limit` | Max results (default: 10) |
+
+**Search modes:**
+
+- **fulltext** — SQLite FTS. Fast, exact keyword matching.
+- **semantic** — Vector similarity search via LanceDB. Understands meaning ("how does auth work?" finds authentication code even without the word "auth"). Falls back to fulltext if vector store is unavailable.
+- **symbol** — Searches the symbol index (function names, class names, etc.) with fuzzy matching.
+
+**Examples:**
+
+```bash
+# Keyword search
+repowise search "rate limiting"
+
+# Semantic search — understands intent
+repowise search "how are errors handled" --mode semantic
+
+# Find a symbol
+repowise search "AuthService" --mode symbol --limit 20
+```
+
+---
+
+### `repowise mcp`
+
+Start the MCP (Model Context Protocol) server for AI editor integration.
+
+```bash
+repowise mcp [PATH]
+```
+
+This is how you connect repowise to Claude Code, Cursor, Cline, Windsurf, and other MCP-compatible editors.
+
+**Options:**
+
+| Flag | Description |
+|------|-------------|
+| `--transport` | Protocol: `stdio` (default, for editors) or `sse` (for web clients) |
+| `--port` | Port for SSE transport (default: 7338) |
+
+**MCP tools exposed (8 tools):**
+
+| Tool | What it does |
+|------|-------------|
+| `get_overview` | Repository architecture summary, key modules, entry points, git health |
+| `get_context` | Complete context for files/modules/symbols — docs, ownership, decisions, freshness |
+| `get_risk` | Modification risk assessment — hotspot score, dependents, bus factor, trend |
+| `get_why` | Why code is structured the way it is — architectural decisions, git archaeology |
+| `search_codebase` | Semantic search over wiki with git freshness boosting |
+| `get_dependency_path` | Find how two modules connect through the dependency graph |
+| `get_dead_code` | Tiered dead code report grouped by confidence |
+| `get_architecture_diagram` | Mermaid diagram with optional churn heat map |
+
+See [MCP Integration](#mcp-integration-with-ai-editors) for setup instructions.
+
+---
+
+### `repowise serve`
+
+Start a local web server for browsing the wiki in your browser.
+
+```bash
+repowise serve [PATH]
+```
+
+**Options:**
+
+| Flag | Description |
+|------|-------------|
+| `--port` | Port (default: 7337) |
+| `--host` | Host (default: 127.0.0.1) |
+| `--workers` | Uvicorn workers (default: 1) |
+
+Opens a FastAPI server with a REST API. Pair with the web frontend for a full UI experience (see [Web UI](#web-ui)).
+
+---
+
+### `repowise dead-code`
+
+Detect dead and unused code in your codebase.
+
+```bash
+repowise dead-code [PATH]
+```
+
+**Options:**
+
+| Flag | Description |
+|------|-------------|
+| `--min-confidence` | Minimum confidence threshold (default: 0.4) |
+| `--safe-only` | Only show findings marked safe to delete |
+| `--kind` | Filter: `unreachable_file`, `unused_export`, `unused_internal`, `zombie_package` |
+| `--format` | Output: `table` (default), `json`, `md` |
+
+**Examples:**
+
+```bash
+# Show all findings
+repowise dead-code
+
+# Only safe-to-delete items
+repowise dead-code --safe-only --min-confidence 0.8
+
+# JSON output for scripting
+repowise dead-code --format json
+
+# Only unused exports
+repowise dead-code --kind unused_export
+```
+
+---
+
+### `repowise decision`
+
+Manage architectural decision records. Repowise automatically extracts decisions from inline markers (`// DECISION: ...`), READMEs, and git history. You can also add them manually.
+
+**Subcommands:**
+
+```bash
+repowise decision list [PATH]          # List decisions
+repowise decision show ID [PATH]       # Show full details of a decision
+repowise decision add [PATH]           # Interactively add a new decision
+repowise decision confirm ID [PATH]    # Confirm a proposed decision (set to active)
+repowise decision dismiss ID [PATH]    # Delete a proposed decision
+repowise decision deprecate ID [PATH]  # Mark as deprecated
+repowise decision health [PATH]        # Decision health dashboard
+```
+
+**List options:**
+
+| Flag | Description |
+|------|-------------|
+| `--status` | Filter: `active`, `proposed`, `deprecated`, `superseded`, `all` |
+| `--source` | Filter: `git_archaeology`, `inline_marker`, `readme_mining`, `cli`, `all` |
+| `--proposed` | Shortcut for `--status proposed` |
+| `--stale-only` | Only show stale decisions |
+
+**Examples:**
+
+```bash
+# See all active decisions
+repowise decision list --status active
+
+# Review auto-extracted proposals
+repowise decision list --proposed
+
+# Decision health overview
+repowise decision health
+
+# Confirm a proposed decision
+repowise decision confirm abc123
+
+# Deprecate, replaced by another
+repowise decision deprecate abc123 --superseded-by def456
+```
+
+---
+
+### `repowise generate-claude-md`
+
+Generate or update `CLAUDE.md` with codebase intelligence.
+
+```bash
+repowise generate-claude-md [PATH]
+```
+
+`CLAUDE.md` gives AI editors (Claude Code, Cursor, etc.) instant context about your codebase — architecture, key modules, hotspots, entry points, and conventions.
+
+If you have custom instructions at the top of your `CLAUDE.md`, they are preserved. Only the auto-generated section (between markers) is updated.
+
+**Options:**
+
+| Flag | Description |
+|------|-------------|
+| `--output / -o` | Custom output path (default: `CLAUDE.md` in repo root) |
+| `--stdout` | Print to stdout instead of file |
+
+---
+
+### `repowise export`
+
+Export wiki pages to files.
+
+```bash
+repowise export [PATH]
+```
+
+**Options:**
+
+| Flag | Description |
+|------|-------------|
+| `--format` | `markdown` (default), `html`, `json` |
+| `--output / -o` | Output directory (default: `.repowise/export`) |
+
+**Examples:**
+
+```bash
+# Export all pages as markdown files
+repowise export
+
+# Export as a single JSON file
+repowise export --format json --output ./wiki-export/
+
+# Export as HTML
+repowise export --format html
+```
+
+---
+
+### `repowise reindex`
+
+Rebuild vector search index from existing wiki pages. Useful after changing embedders or if the vector store gets corrupted.
+
+```bash
+repowise reindex [PATH]
+```
+
+**Options:**
+
+| Flag | Description |
+|------|-------------|
+| `--embedder` | Embedder: `gemini`, `openai`, `auto` (default: auto-detect from config) |
+| `--batch-size` | Pages per embedding batch (default: 20) |
+
+---
+
+### `repowise status`
+
+Show wiki sync state and page statistics.
+
+```bash
+repowise status [PATH]
+```
+
+Displays: last sync commit, total pages, pages by type, provider used, total tokens consumed.
+
+---
+
+### `repowise doctor`
+
+Run health checks on the wiki setup.
+
+```bash
+repowise doctor [PATH]
+```
+
+Checks:
+- Git repository valid
+- `.repowise/` directory exists
+- Database connectable with page count
+- `state.json` valid
+- Providers installed and importable
+- Stale page count
+
+---
+
+## Web UI
+
+Repowise includes a full web dashboard built with Next.js, React, and D3.js. It requires Node.js 20+ and runs alongside the backend server.
+
+### Starting the Web UI
+
+**Terminal 1 — Backend:**
+
+```bash
+cd /path/to/your-repo
+repowise serve --port 7337
+```
+
+**Terminal 2 — Frontend:**
+
+```bash
+cd /path/to/repowise           # the repowise source repo
+npm install                     # first time only
+REPOWISE_API_URL=http://localhost:7337 npm run dev --workspace packages/web
+```
+
+On Windows PowerShell:
+
+```powershell
+$env:REPOWISE_API_URL = "http://localhost:7337"
+npm run dev --workspace packages/web
+```
+
+Open **http://localhost:3000** in your browser.
+
+### Pages & Features
+
+**Dashboard** (`/`)
+Home page with aggregate stats (total pages, fresh/stale counts, dead code findings), a list of indexed repositories, and recent job status.
+
+**Wiki Browser** (`/repos/[id]/wiki/...`)
+The heart of repowise. Browse AI-generated documentation for every file and module. Each page includes:
+- Rendered markdown with syntax-highlighted code blocks and Mermaid diagrams
+- Sticky table of contents
+- Freshness badge (fresh / stale / outdated)
+- Git history sidebar — commits, churn percentile, top authors, co-change partners, hotspot indicator
+- Regenerate button for stale pages
+
+**Dependency Graph** (`/repos/[id]/graph`)
+Interactive force-directed graph rendered on HTML Canvas with D3.js. Handles 2000+ nodes. Six view modes:
+- **Module view** — hierarchical organization
+- **Ego graph** — neighborhood of a selected node
+- **Architecture view** — entry point reachability
+- **Dead code view** — highlights unreachable files
+- **Hot files view** — commit activity heatmap
+- **Full graph** — everything
+
+Supports pan, zoom, click-to-inspect, path finding between nodes, filtering by language, and PNG export.
+
+**Search** (`/repos/[id]/search`)
+Full-text and semantic search with result cards showing snippets, confidence scores, and links. A global command palette (`Ctrl+K` / `Cmd+K`) is accessible from any page for quick navigation.
+
+**Symbol Index** (`/repos/[id]/symbols`)
+Searchable, sortable table of every extracted symbol (functions, classes, methods, interfaces). Click any row for the full signature, docstring, and source location.
+
+**Documentation Coverage** (`/repos/[id]/coverage`)
+Donut chart and table showing freshness breakdown. Regenerate stale pages directly from the UI.
+
+**Code Ownership** (`/repos/[id]/ownership`)
+Contributor attribution by module or file. Highlights knowledge silos (bus factor risk) where one person owns >80% of a module.
+
+**Hotspots** (`/repos/[id]/hotspots`)
+Ranked table of high-churn files with commit counts, churn percentile bars, and owner attribution.
+
+**Dead Code** (`/repos/[id]/dead-code`)
+Findings grouped by category (unreachable files, unused exports, zombie packages) with confidence scores, line counts, and safe-to-delete badges. Bulk operations for resolving or acknowledging findings.
+
+**Architectural Decisions** (`/repos/[id]/decisions`)
+Browse and manage extracted decisions. View full rationale, affected files, health score, and status.
+
+**Codebase Chat** (`/repos/[id]/chat`)
+Ask questions about your codebase in natural language. Streaming responses powered by your configured LLM with real-time tool call visualization. The chat uses the same MCP tools as editor integrations.
+
+**Settings** (`/settings`)
+Configure API connection, default provider/model, embedder, and view webhook/MCP setup instructions.
+
+---
+
+## MCP Integration with AI Editors
+
+### Claude Code
+
+Add to your project's `.claude/settings.json` or run:
+
+```bash
+repowise mcp /path/to/your-repo --transport stdio
+```
+
+Claude Code auto-detects the `.repowise/.mcp.json` generated by `repowise init`.
+
+### Cursor / Windsurf / Cline
+
+Add an MCP server entry pointing to:
+
+```json
+{
+  "command": "repowise",
+  "args": ["mcp", "/path/to/your-repo", "--transport", "stdio"]
+}
+```
+
+### Web-based MCP clients
+
+```bash
+repowise mcp /path/to/your-repo --transport sse --port 7338
+```
+
+Connect to `http://localhost:7338/sse`.
+
+### What AI editors can do with MCP
+
+Once connected, your AI editor can:
+- Get an architecture overview before starting any task
+- Fetch rich context for files before reading/modifying them (docs, ownership, decisions, freshness)
+- Assess modification risk before changing hotspot files
+- Understand *why* code is structured a certain way (architectural decisions)
+- Search the wiki semantically ("how do we handle retries?")
+- Trace dependency paths between modules
+- Find dead code to clean up
+- Generate architecture diagrams
+
+---
+
+## Environment Variables
+
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `ANTHROPIC_API_KEY` | If using Anthropic | Anthropic API key |
+| `OPENAI_API_KEY` | If using OpenAI | OpenAI API key |
+| `GEMINI_API_KEY` | If using Gemini | Google Gemini API key |
+| `REPOWISE_DB_URL` | No | Database URL override (default: `.repowise/wiki.db`) |
+| `REPOWISE_EMBEDDER` | No | Embedder for semantic search: `gemini`, `openai`, `mock` |
+| `REPOWISE_API_URL` | Frontend only | Backend URL for the web UI (default: `http://localhost:7337`) |
+| `REPOWISE_API_KEY` | No | Optional API key to protect the server |
+
+---
+
+## Common Workflows
+
+### First-time setup for a new project
+
+```bash
+pip install "repowise[anthropic]"
+export ANTHROPIC_API_KEY="sk-ant-..."
+cd /path/to/your-project
+repowise init
+```
+
+### Daily development workflow
+
+```bash
+# Option A: Manual update after pulling
+git pull
+repowise update
+
+# Option B: Continuous sync while coding
+repowise watch
+```
+
+### Before a code review
+
+```bash
+# Check what's at risk
+repowise dead-code --safe-only
+
+# Review decision health
+repowise decision health
+
+# See hotspots
+repowise status
+```
+
+### Team onboarding
+
+```bash
+# Generate full wiki for the new team member
+repowise init --provider openai
+
+# They can browse it
+repowise serve
+
+# Or use it in their editor
+repowise mcp --transport stdio
+```
+
+### CI/CD integration
+
+```bash
+# Index-only in CI (free, no LLM calls)
+repowise init --index-only
+
+# Export docs as markdown for static hosting
+repowise export --format markdown --output ./docs/wiki/
+```
+
+### Switching LLM providers
+
+```bash
+# Re-generate with a different provider
+repowise init --provider openai --model gpt-5.4-nano --force
+
+# Or just change the model for future updates
+# (edit .repowise/config.yaml, then:)
+repowise update --provider gemini
+```
+
+---
+
+## Troubleshooting
+
+**"Provider X requires the Y package"**
+Install the optional dependency: `pip install "repowise[anthropic]"` (or openai, gemini, litellm).
+
+**Empty search results with semantic mode**
+Check that an embedder is configured. Run `repowise reindex --embedder gemini` to rebuild the vector store.
+
+**"embedder.mock_active" warning**
+Set `REPOWISE_EMBEDDER=gemini` (or `openai`) for real vector search. Mock embedder produces random vectors — semantic search won't work meaningfully.
+
+**Stale pages after code changes**
+Run `repowise update` to sync. Or use `repowise watch` for automatic syncing.
+
+**Cost seems high**
+Use `--dry-run` to see the cost estimate first. Use `--test-run` to validate with just 10 files. Use `--skip-tests --skip-infra` to reduce scope. Lower `--concurrency` to slow down API usage.
+
+**init was interrupted**
+Run `repowise init --resume` to pick up where it left off.
+
+**Vector store corrupted**
+Run `repowise reindex` to rebuild from existing wiki pages.
+
+**Doctor says database has 0 pages**
+The init either failed or was run with `--index-only`. Run `repowise init` with a provider to generate pages.
+
+**Frontend shows empty repo list**
+Make sure `REPOWISE_DB_URL` (or `REPOWISE_API_URL` for the frontend) points to the correct database. The backend and frontend must point to the same wiki DB.
+
+**CORS errors in the browser**
+Ensure both the backend (`repowise serve`) and frontend (`npm run dev`) are running. The backend allows all origins by default.

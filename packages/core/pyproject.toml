@@ -1,85 +1,9 @@
-[build-system]
-requires = ["hatchling"]
-build-backend = "hatchling.build"
-
-[project]
-name = "repowise-core"
-version = "0.1.0"
-description = "repowise core: ingestion pipeline, dependency graph, and documentation generation engine"
-readme = "README.md"
-requires-python = ">=3.11"
-license = { text = "Apache-2.0" }
-keywords = ["documentation", "codebase", "wiki", "llm", "ai"]
-classifiers = [
-    "Development Status :: 3 - Alpha",
-    "Intended Audience :: Developers",
-    "License :: OSI Approved :: Apache Software License",
-    "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.11",
-    "Programming Language :: Python :: 3.12",
-    "Programming Language :: Python :: 3.13",
-    "Topic :: Software Development :: Documentation",
-    "Typing :: Typed",
-]
-dependencies = [
-    # HTTP client (used by all providers)
-    "httpx>=0.27,<1",
-    # LLM providers
-    "anthropic>=0.40,<1",
-    "openai>=1.50,<2",
-    "litellm>=1.50,<2",
-    # AST parsing
-    "tree-sitter>=0.23,<1",
-    "tree-sitter-python>=0.23,<1",
-    "tree-sitter-typescript>=0.23,<1",
-    "tree-sitter-javascript>=0.23,<1",
-    "tree-sitter-go>=0.23,<1",
-    "tree-sitter-rust>=0.23,<1",
-    "tree-sitter-java>=0.23,<1",
-    "tree-sitter-cpp>=0.23,<1",
-    # Dependency graph
-    "networkx>=3.3,<4",
-    "scipy>=1.11,<2",
-    # Template rendering
-    "jinja2>=3.1,<4",
-    # File filtering
-    "pathspec>=0.12,<1",
-    # Structured logging
-    "structlog>=24,<25",
-    # Database (async)
-    "sqlalchemy[asyncio]>=2.0,<3",
-    "aiosqlite>=0.20,<1",
-    "alembic>=1.13,<2",
-    # Data validation
-    "pydantic>=2.8,<3",
-    # Retry logic
-    "tenacity>=9,<10",
-    # Git operations (ChangeDetector)
-    "gitpython>=3.1,<4",
-    # YAML parsing (OpenAPI handler)
-    "pyyaml>=6.0,<7",
-    # Gemini provider + embedder
-    "google-genai>=1.0,<2",
-    # Vector search (LanceDB — pure Python wheel, no C++ build tools)
-    "lancedb>=0.12,<1",
-]
-
-[project.optional-dependencies]
-# pgvector backend — only needed when DATABASE_URL is PostgreSQL.
-# Install with: uv pip install repowise-core[pgvector]
-pgvector = [
-    "pgvector>=0.3,<1",
-    "asyncpg>=0.29,<1",
-]
-
-[project.urls]
-Homepage = "https://github.com/repowise-ai/repowise"
-Repository = "https://github.com/repowise-ai/repowise"
-Issues = "https://github.com/repowise-ai/repowise/issues"
+# ---------------------------------------------------------------------------
+# repowise-core — per-package config (packaging is handled by root pyproject.toml)
+# ---------------------------------------------------------------------------
 
 [tool.hatch.build.targets.wheel]
-# Namespace package: src/repowise has no __init__.py
-# Hatchling ships the repowise/core/ slice of the repowise namespace
+# Retained for local hatchling dev builds if needed
 packages = ["src/repowise"]
 
 [tool.uv]
