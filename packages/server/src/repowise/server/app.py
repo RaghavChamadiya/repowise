@@ -27,6 +27,7 @@ from repowise.core.persistence.vector_store import InMemoryVectorStore
 from repowise.server import __version__
 from repowise.server.routers import (
     chat,
+    claude_md,
     dead_code,
     decisions,
     git,
@@ -157,6 +158,7 @@ def create_app() -> FastAPI:
     app.include_router(webhooks.router)
     app.include_router(git.router)
     app.include_router(dead_code.router)
+    app.include_router(claude_md.router)
     app.include_router(decisions.router)
     app.include_router(chat.router)
     app.include_router(providers.router)

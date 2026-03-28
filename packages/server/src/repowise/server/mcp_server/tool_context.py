@@ -100,6 +100,44 @@ async def _resolve_one_target(
                     file_path_for_git = target
 
     if target_type is None:
+        # F1: check git_metadata — file may exist but have no wiki page
+        res = await session.execute(
+            select(GitMetadata).where(
+                GitMetadata.repository_id == repo_id,
+                GitMetadata.file_path == target,
+            )
+        )
+        meta = res.scalar_one_or_none()
+        if meta:
+            return {
+                "target": target,
+                "error": (
+                    f"'{target}' exists in the repository but has no wiki page. "
+                    "This usually means the file has too few symbols or is below "
+                    "the PageRank threshold. Run `repowise update` to regenerate docs."
+                ),
+                "exists_in_git": True,
+                "last_commit_at": meta.last_commit_at.isoformat() if meta.last_commit_at else None,
+                "primary_owner": meta.primary_owner_name,
+                "is_hotspot": meta.is_hotspot,
+            }
+
+        # F5: fuzzy path suggestions — match by filename or partial path
+        tail = target.rsplit("/", 1)[-1]
+        res = await session.execute(
+            select(GitMetadata.file_path).where(
+                GitMetadata.repository_id == repo_id,
+                GitMetadata.file_path.contains(tail),
+            ).limit(5)
+        )
+        suggestions = [row[0] for row in res.all() if row[0] != target]
+        if suggestions:
+            return {
+                "target": target,
+                "error": f"Target not found: '{target}'",
+                "suggestions": suggestions,
+            }
+
         return {"target": target, "error": f"Target not found: '{target}'"}
 
     result_data["target"] = target

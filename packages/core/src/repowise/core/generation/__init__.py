@@ -35,9 +35,26 @@ from .models import (
     compute_source_hash,
     decay_confidence,
 )
+from .editor_files import (
+    ClaudeMdGenerator,
+    DecisionSummary,
+    EditorFileData,
+    EditorFileDataFetcher,
+    HotspotFile,
+    KeyModule,
+    TechStackItem,
+)
 from .page_generator import PageGenerator, SYSTEM_PROMPTS
 
 __all__ = [
+    # editor files
+    "ClaudeMdGenerator",
+    "EditorFileData",
+    "TechStackItem",
+    "KeyModule",
+    "HotspotFile",
+    "DecisionSummary",
+    "EditorFileDataFetcher",
     # models
     "PageType",
     "GENERATION_LEVELS",

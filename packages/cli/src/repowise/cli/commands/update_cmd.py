@@ -260,6 +260,41 @@ def update_command(
 
     run_async(_persist())
 
+    # ---- CLAUDE.md (best-effort) ----
+    cfg = load_config(repo_path)
+    if cfg.get("editor_files", {}).get("claude_md", True):
+        try:
+            from pathlib import Path as _Path
+            from repowise.core.generation.editor_files import ClaudeMdGenerator, EditorFileDataFetcher
+            from repowise.core.persistence import (
+                create_engine,
+                create_session_factory,
+                get_session,
+                init_db,
+            )
+            from repowise.core.persistence.crud import get_repository_by_path
+            from repowise.cli.helpers import get_db_url_for_repo
+
+            async def _update_claude_md() -> None:
+                url = get_db_url_for_repo(repo_path)
+                engine = create_engine(url)
+                await init_db(engine)
+                sf = create_session_factory(engine)
+                try:
+                    async with get_session(sf) as session:
+                        repo_rec = await get_repository_by_path(session, str(repo_path))
+                        if repo_rec is None:
+                            return
+                        fetcher = EditorFileDataFetcher(session, repo_rec.id, repo_path)
+                        data = await fetcher.fetch()
+                finally:
+                    await engine.dispose()
+                ClaudeMdGenerator().write(repo_path, data)
+
+            run_async(_update_claude_md())
+        except Exception:
+            pass  # CLAUDE.md update must never fail the update command
+
     # Update state
     state["last_sync_commit"] = head
     state["total_pages"] = state.get("total_pages", 0) + len(generated_pages)

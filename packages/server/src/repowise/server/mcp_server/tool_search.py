@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+
 from sqlalchemy import select
 
 from repowise.core.persistence.database import get_session
@@ -33,13 +35,28 @@ async def search_codebase(
         # Ensure repo exists
         await _get_repo(session, repo)
 
-    # Try semantic search first, fall back to fulltext
-    # Over-fetch when filtering by page_type to avoid returning 0 results
+    # Wait for the background task to finish loading and pre-connecting the
+    # vector stores.  The task imports lancedb in a thread (avoids blocking
+    # the event loop with DLL loading) and calls _ensure_connected() so the
+    # first search() call hits a warm connection.  Typically completes in
+    # under a second for a local LanceDB; 30 s timeout is a hard safety net.
+    if _state._vector_store_ready is not None:
+        try:
+            await asyncio.wait_for(_state._vector_store_ready.wait(), timeout=30.0)
+        except asyncio.TimeoutError:
+            pass
+
+    # Try semantic search, fall back to FTS.
+    # Over-fetch when filtering by page_type to avoid returning 0 results.
+    # 8 s safety-net timeout covers any remaining Gemini API latency.
     fetch_limit = limit * 3 if page_type else limit
     results = []
     try:
-        results = await _state._vector_store.search(query, limit=fetch_limit)
-    except Exception:
+        results = await asyncio.wait_for(
+            _state._vector_store.search(query, limit=fetch_limit),
+            timeout=8.0,
+        )
+    except (asyncio.TimeoutError, Exception):
         pass
     if not results:
         try:

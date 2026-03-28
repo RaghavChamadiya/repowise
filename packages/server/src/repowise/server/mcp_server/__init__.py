@@ -53,6 +53,7 @@ from repowise.server.mcp_server.tool_diagram import get_architecture_diagram  # 
 
 _STATE_NAMES = frozenset({
     "_session_factory", "_vector_store", "_decision_store", "_fts", "_repo_path",
+    "_vector_store_ready",
 })
 
 

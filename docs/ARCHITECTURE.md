@@ -37,8 +37,9 @@ For per-package detail (installation, full API reference, all CLI flags, file ma
 12. [Codebase Chat](#12-codebase-chat)
 13. [Data Flow Diagrams](#13-data-flow-diagrams)
 14. [Key Design Decisions](#14-key-design-decisions)
-15. [Adding a New Language](#15-adding-a-new-language)
-16. [Adding a New LLM Provider](#16-adding-a-new-llm-provider)
+15. [Editor File Generation](#15-editor-file-generation)
+16. [Adding a New Language](#16-adding-a-new-language)
+17. [Adding a New LLM Provider](#17-adding-a-new-llm-provider)
 
 ---
 
@@ -124,7 +125,13 @@ repowise/
 │   │   │   │   ├── context_assembler.py# context assembly (RAG + graph + git + source)
 │   │   │   │   ├── job_system.py       # resumable job state machine
 │   │   │   │   ├── models.py           # GeneratedPage, GenerationConfig, PageType, etc.
-│   │   │   │   └── templates/          # Jinja2 prompt templates (one per page type)
+│   │   │   │   ├── templates/          # Jinja2 prompt templates (one per page type)
+│   │   │   │   └── editor_files/       # CLAUDE.md / cursor.md generation (no LLM)
+│   │   │   │       ├── base.py         # BaseEditorFileGenerator (marker-merge, atomic write)
+│   │   │   │       ├── data.py         # EditorFileData + sub-dataclasses (frozen)
+│   │   │   │       ├── fetcher.py      # EditorFileDataFetcher (DB → EditorFileData)
+│   │   │   │       ├── tech_stack.py   # filesystem tech stack + build command detection
+│   │   │   │       └── claude_md.py    # ClaudeMdGenerator subclass
 │   │   │   ├── persistence/
 │   │   │   │   ├── models.py           # SQLAlchemy ORM models
 │   │   │   │   ├── crud.py             # async CRUD layer
@@ -155,14 +162,14 @@ repowise/
 │   │
 │   ├── server/                 # Python: FastAPI REST API + MCP server
 │   │   └── src/repowise/server/
-│   │       ├── api/             # FastAPI routers (repos, pages, jobs, symbols, graph, git, dead-code, decisions, search)
-│   │       ├── mcp_server.py    # MCP server (8 tools)
+│   │       ├── routers/         # FastAPI routers (repos, pages, jobs, symbols, graph, git, dead-code, decisions, search, claude-md)
+│   │       ├── mcp_server/      # MCP server package (8 tools, split into focused modules)
 │   │       ├── webhooks/        # GitHub + GitLab handlers
 │   │       └── scheduler.py     # APScheduler background jobs
 │   │
 │   ├── cli/                    # Python: repowise CLI (click + rich)
 │   │   └── src/repowise/cli/
-│   │       └── commands/        # init, update, watch, serve, search, export, status, doctor, dead-code, decision, mcp, reindex
+│   │       └── commands/        # init, update, watch, serve, search, export, status, doctor, dead-code, decision, mcp, reindex, generate-claude-md
 │   │
 │   └── web/                    # Next.js 15 frontend
 │       ├── src/app/             # App Router pages (dashboard, wiki, search, graph, symbols, …)
@@ -926,7 +933,7 @@ repowise decision health     # health summary
 | `core/analysis/decision_extractor.py` | All 4 capture sources + staleness computation |
 | `core/persistence/models.py` | `DecisionRecord` ORM model |
 | `core/persistence/crud.py` | 8 decision CRUD functions |
-| `server/mcp_server.py` | MCP tool `get_why` (3-mode: search, path, health dashboard) |
+| `server/mcp_server/tool_why.py` | MCP tool `get_why` (3-mode: search, path, health dashboard) |
 | `server/routers/decisions.py` | REST API endpoints |
 | `cli/commands/decision_cmd.py` | CLI command group (7 subcommands) |
 
@@ -991,6 +998,8 @@ Key routers:
 - `/api/repos/{id}/dead-code` — dead code findings (GET list, POST trigger analysis)
 - `/api/repos/{id}/dead-code/summary` — aggregate dead code stats
 - `/api/dead-code/{finding_id}` — PATCH to resolve/acknowledge findings
+- `/api/repos/{id}/claude-md` — GET preview of generated CLAUDE.md section (JSON, no disk write)
+- `/api/repos/{id}/claude-md/generate` — POST to regenerate and write CLAUDE.md to disk
 - `/health` — liveness + readiness (checks DB + provider)
 - `/metrics` — Prometheus-compatible metrics (job counts, token totals, stale count)
 
@@ -1133,6 +1142,7 @@ JobSystem
               ▼
        .repowise/state.json updated
        MCP config printed
+       CLAUDE.md generated (EditorFileDataFetcher → ClaudeMdGenerator, no LLM)
        Summary shown (pages, tokens, cost, time)
 ```
 
@@ -1342,7 +1352,47 @@ and the vector store embed (LanceDB or pgvector) can overlap with the next file'
 
 ---
 
-## 15. Adding a New Language
+## 15. Editor File Generation
+
+See [`docs/EDITOR_FILES.md`](EDITOR_FILES.md) for the complete reference covering
+architecture, all data sources, how the marker-merge system works, and how to add
+support for a new editor file (cursor.md, copilot-instructions.md, etc.).
+
+**Quick summary:** repowise can generate and maintain AI-editor configuration files
+(CLAUDE.md, cursor.md, etc.) from the already-indexed codebase data — no LLM calls.
+The system uses HTML comment markers to split the file into a user-owned section and
+a Repowise-managed section. The user section is never touched.
+
+The feature runs automatically after `repowise init` and `repowise update`, and can
+also be run standalone:
+
+```
+repowise generate-claude-md [PATH]
+```
+
+Config opt-out:
+```yaml
+# .repowise/config.yaml
+editor_files:
+  claude_md: false
+```
+
+Key files:
+
+| File | Purpose |
+|------|---------|
+| `core/generation/editor_files/base.py` | `BaseEditorFileGenerator` — marker-merge logic shared by all editor-file generators |
+| `core/generation/editor_files/data.py` | `EditorFileData` frozen dataclass — the data contract between fetcher and template |
+| `core/generation/editor_files/fetcher.py` | `EditorFileDataFetcher` — queries DB for architecture summary, modules, hotspots, decisions |
+| `core/generation/editor_files/tech_stack.py` | Filesystem scan for languages, frameworks, build commands |
+| `core/generation/editor_files/claude_md.py` | `ClaudeMdGenerator` — 30-line subclass that binds filename + template |
+| `core/generation/templates/claude_md.j2` | Jinja2 template for the Repowise-managed section |
+| `cli/commands/claude_md_cmd.py` | `repowise generate-claude-md` CLI command |
+| `server/routers/claude_md.py` | `GET/POST /api/repos/{id}/claude-md` REST endpoints |
+
+---
+
+## 16. Adding a New Language
 
 1. **Write `packages/core/queries/<language>.scm`**
 
@@ -1384,7 +1434,7 @@ and the vector store embed (LanceDB or pgvector) can overlap with the next file'
 
 ---
 
-## 16. Adding a New LLM Provider
+## 17. Adding a New LLM Provider
 
 1. **Create `packages/core/providers/<name>.py`**
 

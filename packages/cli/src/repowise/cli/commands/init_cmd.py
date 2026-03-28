@@ -28,6 +28,68 @@ from repowise.cli.helpers import (
 )
 
 
+def _maybe_generate_claude_md(
+    console_obj: Any,
+    repo_path: Path,
+    *,
+    no_claude_md: bool = False,
+) -> None:
+    """Generate CLAUDE.md if enabled in config and not opted out."""
+    cfg = load_config(repo_path)
+    enabled = cfg.get("editor_files", {}).get("claude_md", True)
+    if no_claude_md:
+        # Persist opt-out so 'repowise update' respects it
+        ef_cfg = dict(cfg.get("editor_files", {}))
+        ef_cfg["claude_md"] = False
+        cfg["editor_files"] = ef_cfg
+        try:
+            import yaml  # type: ignore[import-untyped]
+            cfg_path = repo_path / ".repowise" / "config.yaml"
+            cfg_path.write_text(
+                yaml.dump(cfg, default_flow_style=False, sort_keys=False),
+                encoding="utf-8",
+            )
+        except ImportError:
+            pass
+        return
+    if not enabled:
+        return
+    try:
+        with console_obj.status("  Generating CLAUDE.md…", spinner="dots"):
+            run_async(_write_claude_md_async(repo_path))
+        console_obj.print("  [green]✓[/green] CLAUDE.md updated")
+    except Exception as exc:  # noqa: BLE001
+        console_obj.print(f"  [yellow]CLAUDE.md skipped: {exc}[/yellow]")
+
+
+async def _write_claude_md_async(repo_path: Path) -> None:
+    """Fetch data from DB and write CLAUDE.md (async helper)."""
+    from repowise.core.generation.editor_files import ClaudeMdGenerator, EditorFileDataFetcher
+    from repowise.core.persistence import (
+        create_engine,
+        create_session_factory,
+        get_session,
+        init_db,
+    )
+    from repowise.core.persistence.crud import get_repository_by_path
+    from repowise.cli.helpers import get_db_url_for_repo
+
+    url = get_db_url_for_repo(repo_path)
+    engine = create_engine(url)
+    await init_db(engine)
+    sf = create_session_factory(engine)
+    try:
+        async with get_session(sf) as session:
+            repo = await get_repository_by_path(session, str(repo_path))
+            if repo is None:
+                return  # Not indexed yet — skip silently
+            fetcher = EditorFileDataFetcher(session, repo.id, repo_path)
+            data = await fetcher.fetch()
+    finally:
+        await engine.dispose()
+    ClaudeMdGenerator().write(repo_path, data)
+
+
 async def _persist_index_only(
     repo_path: Path,
     repo_name: str,
@@ -184,6 +246,13 @@ def _resolve_embedder(embedder_flag: str | None) -> str:
     default=False,
     help="Use git log --follow to track files across renames (slower but more accurate history). Saved to config.",
 )
+@click.option(
+    "--no-claude-md",
+    "no_claude_md",
+    is_flag=True,
+    default=False,
+    help="Skip generating CLAUDE.md. Saves 'editor_files.claude_md: false' to config.",
+)
 def init_command(
     path: str | None,
     provider_name: str | None,
@@ -201,6 +270,7 @@ def init_command(
     exclude: tuple[str, ...],
     commit_limit: int | None,
     follow_renames: bool,
+    no_claude_md: bool,
 ) -> None:
     """Generate wiki documentation for a codebase.
 
@@ -586,6 +656,9 @@ def init_command(
         from repowise.cli.mcp_config import save_mcp_config
         save_mcp_config(repo_path)
 
+        # CLAUDE.md (index-only: structural data is available)
+        _maybe_generate_claude_md(console, repo_path, no_claude_md=no_claude_md)
+
         elapsed = time.monotonic() - start
 
         # Collect stats for the completion panel
@@ -854,6 +927,9 @@ def init_command(
     with console.status("  Persisting to database…", spinner="dots"):
         run_async(_persist())
     console.print("  [green]✓[/green] Database updated")
+
+    # ---- CLAUDE.md ----
+    _maybe_generate_claude_md(console, repo_path, no_claude_md=no_claude_md)
 
     # ---- State ----
     # Query actual DB page count (not just current job's pages)

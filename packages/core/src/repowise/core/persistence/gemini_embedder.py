@@ -41,12 +41,17 @@ class GeminiEmbedder:
         output_dimensionality: Override output vector size (default: 768, max: 3072).
     """
 
+    # Default timeout for embedding API calls (seconds).
+    # Prevents search_codebase from hanging on slow / unreachable API.
+    _DEFAULT_TIMEOUT: float = 10.0
+
     def __init__(
         self,
         api_key: str | None = None,
         model: str = "gemini-embedding-001",
         task_type: str = "SEMANTIC_SIMILARITY",
         output_dimensionality: int = 768,
+        timeout: float = _DEFAULT_TIMEOUT,
     ) -> None:
         self._api_key = api_key or os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
         if not self._api_key:
@@ -56,6 +61,8 @@ class GeminiEmbedder:
         self._model = model
         self._task_type = task_type
         self._output_dimensionality = output_dimensionality
+        self._timeout = timeout
+        self._client: object | None = None  # cached; created once on first embed()
 
     @property
     def dimensions(self) -> int:
@@ -76,19 +83,34 @@ class GeminiEmbedder:
         if not texts:
             return []
 
+        api_key = self._api_key
+        model = self._model
+        task_type = self._task_type
+        output_dimensionality = self._output_dimensionality
+        timeout = self._timeout
+
         def _embed_sync() -> list[list[float]]:
             from google import genai  # type: ignore[import-untyped]
             from google.genai import types as genai_types  # type: ignore[import-untyped]
 
-            client = genai.Client(api_key=self._api_key)
+            # Cache client — create once, reuse across calls.
+            if self._client is None:
+                try:
+                    http_options = genai_types.HttpOptions(timeout=int(timeout * 1000))
+                except Exception:
+                    http_options = None  # older SDK versions may not support this
+                kwargs: dict = {"api_key": api_key}
+                if http_options is not None:
+                    kwargs["http_options"] = http_options
+                self._client = genai.Client(**kwargs)
 
             config = genai_types.EmbedContentConfig(
-                task_type=self._task_type,
-                output_dimensionality=self._output_dimensionality,
+                task_type=task_type,
+                output_dimensionality=output_dimensionality,
             )
 
-            result = client.models.embed_content(
-                model=self._model,
+            result = self._client.models.embed_content(  # type: ignore[union-attr]
+                model=model,
                 contents=texts,
                 config=config,
             )

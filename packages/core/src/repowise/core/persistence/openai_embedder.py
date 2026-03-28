@@ -43,10 +43,14 @@ class OpenAIEmbedder:
         "text-embedding-ada-002": 1536,
     }
 
+    # Default timeout for embedding API calls (seconds).
+    _DEFAULT_TIMEOUT: float = 10.0
+
     def __init__(
         self,
         api_key: str | None = None,
         model: str = "text-embedding-3-small",
+        timeout: float = _DEFAULT_TIMEOUT,
     ) -> None:
         self._api_key = api_key or os.environ.get("OPENAI_API_KEY")
         if not self._api_key:
@@ -54,6 +58,8 @@ class OpenAIEmbedder:
                 "OpenAI API key required. Pass api_key= or set OPENAI_API_KEY env var."
             )
         self._model = model
+        self._timeout = timeout
+        self._client: object | None = None  # cached; created once on first embed()
 
     @property
     def dimensions(self) -> int:
@@ -74,14 +80,19 @@ class OpenAIEmbedder:
         if not texts:
             return []
 
-        api_key = self._api_key
         model = self._model
+        timeout = self._timeout
 
         def _embed_sync() -> list[list[float]]:
             import openai  # type: ignore[import-untyped]
 
-            client = openai.OpenAI(api_key=api_key)
-            response = client.embeddings.create(model=model, input=texts)
+            # Cache client — create once with timeout, reuse across calls.
+            if self._client is None:
+                self._client = openai.OpenAI(
+                    api_key=self._api_key,
+                    timeout=timeout,
+                )
+            response = self._client.embeddings.create(model=model, input=texts)  # type: ignore[union-attr]
             raw_vectors = [list(item.embedding) for item in response.data]
             return [_l2_normalize(v) for v in raw_vectors]
 

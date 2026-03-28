@@ -9,6 +9,7 @@ from repowise.cli.commands.dead_code_cmd import dead_code_command
 from repowise.cli.commands.decision_cmd import decision_group
 from repowise.cli.commands.doctor_cmd import doctor_command
 from repowise.cli.commands.export_cmd import export_command
+from repowise.cli.commands.claude_md_cmd import claude_md_command
 from repowise.cli.commands.init_cmd import init_command
 from repowise.cli.commands.mcp_cmd import mcp_command
 from repowise.cli.commands.reindex_cmd import reindex_command
@@ -26,6 +27,7 @@ def cli() -> None:
 
 
 cli.add_command(init_command)
+cli.add_command(claude_md_command)
 cli.add_command(update_command)
 cli.add_command(dead_code_command)
 cli.add_command(decision_group)

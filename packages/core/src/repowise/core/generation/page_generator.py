@@ -881,16 +881,33 @@ def _is_significant_file(
 ) -> bool:
     """Return True if this code file deserves its own file_page.
 
-    A file is significant if it:
-    - Has at least config.file_page_min_symbols symbols, AND
-    - Is an entry point, OR in the top PageRank percentile, OR is a bridge file
-      (non-zero betweenness centrality).
+    A file is significant if it is connected/important in the dependency graph
+    (entry point, top PageRank percentile, or bridge file) AND has enough
+    content to document.
+
+    The symbol requirement is waived for files with no original definitions
+    (state modules, __init__ re-exporters, config files) that are still heavily
+    imported — these are architecturally important even without function bodies.
+    Package __init__.py files with any symbols are always included since they
+    are the public interface of their module.
     """
-    if len(parsed.symbols) < config.file_page_min_symbols:
-        return False
     path = parsed.file_info.path
-    return (
-        parsed.file_info.is_entry_point
-        or pagerank.get(path, 0.0) >= pr_threshold
-        or betweenness.get(path, 0.0) > 0.0
-    )
+    pr = pagerank.get(path, 0.0)
+    bet = betweenness.get(path, 0.0)
+    is_entry = parsed.file_info.is_entry_point
+
+    # F3: package __init__.py files are module interfaces — always include
+    # if they have any symbols (re-exports, __getattr__, etc.)
+    if path.endswith("__init__.py") and len(parsed.symbols) > 0:
+        return True
+
+    # Must appear significant in the graph
+    if not (is_entry or pr >= pr_threshold or bet > 0.0):
+        return False
+
+    # F2: waive symbol requirement for connected files with no original
+    # definitions (e.g. state/config modules imported by many files)
+    if len(parsed.symbols) < config.file_page_min_symbols:
+        return is_entry or pr >= pr_threshold
+
+    return True
