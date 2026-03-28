@@ -9,6 +9,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+pytest.importorskip("google.genai", reason="google-genai SDK not installed")
+
 from repowise.core.providers.llm.base import GeneratedResponse, ProviderError, RateLimitError
 from repowise.core.providers.llm.gemini import GeminiProvider
 

@@ -23,7 +23,7 @@ class TestCliBasics:
         result = runner.invoke(cli, ["--version"])
         assert result.exit_code == 0
         assert "repowise" in result.output
-        assert "0.1.0" in result.output
+        assert "0.1.2" in result.output
 
     def test_help(self, runner):
         result = runner.invoke(cli, ["--help"])
