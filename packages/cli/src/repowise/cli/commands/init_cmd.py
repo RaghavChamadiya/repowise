@@ -56,11 +56,11 @@ def _maybe_generate_claude_md(
     if not enabled:
         return
     try:
-        with console_obj.status("  Generating CLAUDE.md…", spinner="dots"):
+        with console_obj.status("  Generating .claude/CLAUDE.md…", spinner="dots"):
             run_async(_write_claude_md_async(repo_path))
-        console_obj.print("  [green]✓[/green] CLAUDE.md updated")
+        console_obj.print("  [green]✓[/green] .claude/CLAUDE.md updated")
     except Exception as exc:
-        console_obj.print(f"  [yellow]CLAUDE.md skipped: {exc}[/yellow]")
+        console_obj.print(f"  [yellow].claude/CLAUDE.md skipped: {exc}[/yellow]")
 
 
 async def _write_claude_md_async(repo_path: Path) -> None:
@@ -717,11 +717,12 @@ def init_command(
                 pass  # No yaml — commit_limit will use default next time
 
         # MCP config
-        from repowise.cli.mcp_config import save_mcp_config
+        from repowise.cli.mcp_config import save_mcp_config, save_root_mcp_config
 
         save_mcp_config(repo_path)
+        save_root_mcp_config(repo_path)
 
-        # CLAUDE.md (index-only: structural data is available)
+        # .claude/CLAUDE.md (index-only: structural data is available)
         _maybe_generate_claude_md(console, repo_path, no_claude_md=no_claude_md)
 
         elapsed = time.monotonic() - start
@@ -1070,9 +1071,14 @@ def init_command(
     )
 
     # ---- Completion ----
-    from repowise.cli.mcp_config import format_setup_instructions, save_mcp_config
+    from repowise.cli.mcp_config import (
+        format_setup_instructions,
+        save_mcp_config,
+        save_root_mcp_config,
+    )
 
     save_mcp_config(repo_path)
+    save_root_mcp_config(repo_path)
 
     elapsed = time.monotonic() - start
 
