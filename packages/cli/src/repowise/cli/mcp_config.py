@@ -33,6 +33,31 @@ def save_mcp_config(repo_path: Path) -> Path:
     return config_path
 
 
+def save_root_mcp_config(repo_path: Path) -> Path:
+    """Write .mcp.json at repo root for Claude Code auto-discovery.
+
+    Merges the repowise server entry into any existing mcpServers block
+    so other MCP servers configured by the user are preserved.
+    """
+    config_path = repo_path / ".mcp.json"
+    new_entry = generate_mcp_config(repo_path)["mcpServers"]
+
+    if config_path.exists():
+        try:
+            existing = json.loads(config_path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            existing = {}
+        servers = dict(existing.get("mcpServers", {}))
+        servers.update(new_entry)
+        existing["mcpServers"] = servers
+        merged = existing
+    else:
+        merged = {"mcpServers": new_entry}
+
+    config_path.write_text(json.dumps(merged, indent=2) + "\n", encoding="utf-8")
+    return config_path
+
+
 def format_setup_instructions(repo_path: Path) -> str:
     """Return human-readable setup instructions for MCP clients."""
     config = generate_mcp_config(repo_path)
@@ -43,12 +68,7 @@ def format_setup_instructions(repo_path: Path) -> str:
 MCP Server Configuration
 ========================
 
-Add the following to your editor's MCP config:
-
-Claude Code (~/.claude.json or ~/.claude/claude.json):
-  "mcpServers": {{
-    "repowise": {server_block}
-  }}
+Claude Code: automatically configured via .mcp.json (no manual steps needed).
 
 Cursor (.cursor/mcp.json):
   {server_block}
