@@ -20,7 +20,7 @@ from repowise.cli.helpers import (
     "output_path",
     default=None,
     metavar="FILE",
-    help="Write to a custom path (default: CLAUDE.md in the repo root).",
+    help="Write to a custom path (default: .claude/CLAUDE.md).",
 )
 @click.option(
     "--stdout",
@@ -99,5 +99,5 @@ async def _generate(
         written.rename(dest)
         written = dest
 
-    click.echo(f"CLAUDE.md updated: {written}")
+    click.echo(f".claude/CLAUDE.md updated: {written}")
     return None

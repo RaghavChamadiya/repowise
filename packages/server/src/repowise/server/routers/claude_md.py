@@ -50,7 +50,7 @@ async def generate_claude_md(
     repo_id: str,
     session: AsyncSession = Depends(get_db_session),  # noqa: B008
 ) -> dict:
-    """Regenerate CLAUDE.md and write it to the repository root.
+    """Regenerate .claude/CLAUDE.md and write it to the repository.
 
     Returns the generated content. Runs synchronously (fast — no LLM calls).
     """
