@@ -68,6 +68,14 @@ class VectorStore(ABC):
         """Release any resources held by the store."""
         ...
 
+    async def list_page_ids(self) -> set[str]:
+        """Return the set of page IDs currently stored.
+
+        Used by ``repowise doctor --repair`` to detect three-store
+        inconsistencies.  Implementations may override for efficiency.
+        """
+        return set()  # default: empty (subclasses should override)
+
 
 # ---------------------------------------------------------------------------
 # InMemoryVectorStore
@@ -133,6 +141,9 @@ class InMemoryVectorStore(VectorStore):
 
     async def close(self) -> None:
         self._store.clear()
+
+    async def list_page_ids(self) -> set[str]:
+        return set(self._store.keys())
 
     def __len__(self) -> int:
         return len(self._store)
@@ -276,6 +287,13 @@ class LanceDBVectorStore(VectorStore):
         self._table = None
         self._db = None
 
+    async def list_page_ids(self) -> set[str]:
+        await self._ensure_connected()
+        if self._table is None:
+            return set()
+        rows = await self._table.query().select(["page_id"]).to_list()  # type: ignore[union-attr]
+        return {r["page_id"] for r in rows}
+
 
 # ---------------------------------------------------------------------------
 # PgVectorStore
@@ -363,3 +381,12 @@ class PgVectorStore(VectorStore):
 
     async def close(self) -> None:
         pass  # session_factory manages connection lifecycle
+
+    async def list_page_ids(self) -> set[str]:
+        from sqlalchemy.sql import text as sa_text
+
+        async with self._session_factory() as session:
+            rows = await session.execute(
+                sa_text("SELECT id FROM wiki_pages WHERE embedding IS NOT NULL")
+            )
+            return {r[0] for r in rows.fetchall()}

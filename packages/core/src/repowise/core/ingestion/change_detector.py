@@ -76,6 +76,26 @@ class AffectedPages:
     decay_only: list[str]  # pages to mark stale without immediate regeneration
 
 
+def compute_adaptive_budget(file_diffs: list[FileDiff], total_files: int) -> int:
+    """Compute a cascade budget scaled to the magnitude of the change.
+
+    Small changes get a small budget to avoid unnecessary LLM calls.
+    Large refactors get a proportionally larger budget so important
+    dependent pages are regenerated in the same run.  Hard cap at 50.
+
+    Returns an integer cascade budget.
+    """
+    n = len(file_diffs)
+    if n == 0:
+        return 0
+    if n == 1:
+        return 10
+    if n <= 5:
+        return 30
+    # 6+ files: scale proportionally, hard cap at 50
+    return min(n * 3, 50, total_files)
+
+
 # ---------------------------------------------------------------------------
 # ChangeDetector
 # ---------------------------------------------------------------------------

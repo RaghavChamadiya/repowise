@@ -570,6 +570,16 @@ def init_command(
         # Build graph
         progress.update(task_graph, visible=True)
         graph_builder.build()
+
+        # Add framework-aware synthetic edges (conftest, Django, FastAPI, Flask)
+        try:
+            from repowise.core.generation.editor_files.tech_stack import detect_tech_stack
+
+            tech_items = detect_tech_stack(repo_path)
+            graph_builder.add_framework_edges([item.name for item in tech_items])
+        except Exception:
+            pass  # framework edge detection is best-effort
+
         progress.update(task_graph, completed=1)
 
         # Wait for git indexing to complete — show a spinner so the user

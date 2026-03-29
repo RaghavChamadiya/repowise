@@ -24,7 +24,7 @@ from repowise.cli.helpers import (
 @click.option("--provider", "provider_name", default=None, help="LLM provider name.")
 @click.option("--model", default=None, help="Model identifier override.")
 @click.option("--since", default=None, help="Base git ref to diff from (overrides state).")
-@click.option("--cascade-budget", type=int, default=30, help="Max pages to regenerate per run.")
+@click.option("--cascade-budget", type=int, default=None, help="Max pages to regenerate (auto-scaled if unset).")
 @click.option(
     "--dry-run", is_flag=True, default=False, help="Show affected pages without regenerating."
 )
@@ -33,7 +33,7 @@ def update_command(
     provider_name: str | None,
     model: str | None,
     since: str | None,
-    cascade_budget: int,
+    cascade_budget: int | None,
     dry_run: bool,
 ) -> None:
     """Incrementally update wiki pages for files changed since last sync."""
@@ -113,6 +113,17 @@ def update_command(
             pass
     graph_builder.build()
 
+    # Add framework-aware synthetic edges (conftest, Django, FastAPI, Flask)
+    try:
+        from repowise.core.generation.editor_files.tech_stack import detect_tech_stack
+
+        tech_items = detect_tech_stack(repo_path)
+        fw_count = graph_builder.add_framework_edges([item.name for item in tech_items])
+        if fw_count:
+            console.print(f"Framework edges added: [cyan]{fw_count}[/cyan]")
+    except Exception:
+        pass  # framework edge detection is best-effort
+
     # Re-index git metadata for changed files
     git_meta_map: dict[str, dict] = {}
     try:
@@ -132,7 +143,12 @@ def update_command(
     except Exception as exc:
         console.print(f"[yellow]Git re-index skipped: {exc}[/yellow]")
 
-    # Determine affected pages
+    # Determine affected pages (auto-scale budget if not explicitly set)
+    if cascade_budget is None:
+        from repowise.core.ingestion.change_detector import compute_adaptive_budget
+
+        cascade_budget = compute_adaptive_budget(file_diffs, len(file_infos))
+        console.print(f"Adaptive cascade budget: [cyan]{cascade_budget}[/cyan]")
     affected = detector.get_affected_pages(file_diffs, graph_builder.graph(), cascade_budget)
 
     console.print(f"Pages to regenerate: [cyan]{len(affected.regenerate)}[/cyan]")
@@ -305,6 +321,20 @@ def update_command(
     save_state(repo_path, state)
 
     elapsed = time.monotonic() - start
-    console.print(
-        f"[bold green]Updated {len(generated_pages)} pages in {elapsed:.1f}s[/bold green]"
-    )
+
+    # Print generation report
+    try:
+        from repowise.core.generation.report import GenerationReport, render_report
+
+        report = GenerationReport.from_pages(
+            generated_pages,
+            stale_count=len(affected.decay_only),
+            decisions_count=len(new_decision_markers),
+            elapsed=elapsed,
+        )
+        render_report(report, console)
+    except Exception:
+        # Fallback to simple message if report fails
+        console.print(
+            f"[bold green]Updated {len(generated_pages)} pages in {elapsed:.1f}s[/bold green]"
+        )

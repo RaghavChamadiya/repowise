@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import re
 import uuid
 from collections.abc import Callable
 from datetime import UTC, datetime
@@ -812,7 +813,7 @@ class PageGenerator:
                     log.debug("rag.search_failed", path=parsed.file_info.path, error=str(e))
         user_prompt = self._render("file_page.j2", ctx=ctx)
         response = await self._call_provider("file_page", user_prompt, str(uuid.uuid4()))
-        return self._build_generated_page(
+        page = self._build_generated_page(
             "file_page",
             parsed.file_info.path,
             f"File: {parsed.file_info.path}",
@@ -820,6 +821,17 @@ class PageGenerator:
             compute_source_hash(user_prompt),
             GENERATION_LEVELS["file_page"],
         )
+        # Cross-check LLM output against actual symbols
+        hal_warnings = _validate_symbol_references(response.content, parsed)
+        if hal_warnings:
+            log.warning(
+                "hallucination_check",
+                path=parsed.file_info.path,
+                count=len(hal_warnings),
+                refs=hal_warnings[:5],
+            )
+            page.metadata["hallucination_warnings"] = hal_warnings
+        return page
 
     async def _call_provider(
         self,
@@ -938,3 +950,58 @@ def _is_significant_file(
         return is_entry or pr >= pr_threshold
 
     return True
+
+
+# ---------------------------------------------------------------------------
+# LLM output validation
+# ---------------------------------------------------------------------------
+
+# Common words that appear in backticks but are not code symbols.
+_BACKTICK_SKIP = frozenset(
+    {
+        "True", "False", "None", "null", "undefined", "self", "cls", "this",
+        "str", "int", "float", "bool", "list", "dict", "set", "tuple",
+        "bytes", "object", "type", "Any", "Optional", "Union",
+        "async", "await", "return", "yield", "import", "from",
+        "class", "def", "if", "else", "for", "while", "try", "except",
+        "raise", "with", "pass", "break", "continue", "lambda",
+        "in", "not", "and", "or", "is", "del", "assert", "finally",
+        "elif", "as", "pip", "npm", "go", "rust", "python", "node",
+    }
+)
+
+# Regex: single-backtick references that look like identifiers.
+_BACKTICK_REF_RE = re.compile(r"(?<!`)` *([A-Za-z_]\w*(?:\.\w+)*) *`(?!`)")
+
+
+def _validate_symbol_references(
+    content: str,
+    parsed: ParsedFile,
+) -> list[str]:
+    """Cross-check backtick-quoted names in LLM output against actual symbols.
+
+    Returns a list of warning strings for references that don't match any
+    known symbol, export, or import in the ParsedFile.
+    """
+    refs = set(_BACKTICK_REF_RE.findall(content))
+    if not refs:
+        return []
+
+    known: set[str] = set()
+    for s in parsed.symbols:
+        known.add(s.name)
+        known.add(s.qualified_name)
+    known.update(parsed.exports)
+    for imp in parsed.imports:
+        if imp.module_path:
+            known.add(imp.module_path.split(".")[-1])
+        known.update(imp.imported_names)
+
+    warnings: list[str] = []
+    for ref in refs:
+        if ref in _BACKTICK_SKIP or len(ref) < 2:
+            continue
+        base = ref.split(".")[-1]
+        if ref not in known and base not in known:
+            warnings.append(ref)
+    return warnings

@@ -217,6 +217,22 @@ class FullTextSearch:
                     {"pid": page_id},
                 )
 
+    async def list_indexed_ids(self) -> set[str]:
+        """Return the set of page IDs currently in the FTS index.
+
+        Used by ``repowise doctor --repair`` to detect three-store
+        inconsistencies.
+        """
+        if self._dialect == "sqlite":
+            async with self._engine.connect() as conn:
+                rows = await conn.execute(text("SELECT page_id FROM page_fts"))
+                return {r[0] for r in rows.fetchall()}
+        # PostgreSQL: all wiki_pages rows are automatically indexed via GIN,
+        # so the set of "indexed" ids is all page ids in the table.
+        async with self._engine.connect() as conn:
+            rows = await conn.execute(text("SELECT id FROM wiki_pages"))
+            return {r[0] for r in rows.fetchall()}
+
     async def search(self, query: str, limit: int = 10) -> list[SearchResult]:
         """Search for pages matching *query*.
 
