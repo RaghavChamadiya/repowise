@@ -7,7 +7,7 @@ Gives Claude Code deep understanding of your codebase — architecture, ownershi
 ### From Marketplace
 
 ```shell
-/plugin marketplace add repowise/repowise-plugin
+/plugin marketplace add repowise-dev/repowise-plugin
 /plugin install repowise@repowise
 ```
 
