@@ -12,7 +12,129 @@ from pathlib import Path
 import click
 
 from repowise.cli import __version__
-from repowise.cli.helpers import console
+from repowise.cli.helpers import console, load_config
+
+_GLOBAL_CONFIG_DIR = Path.home() / ".repowise"
+
+
+def _setup_embedder() -> None:
+    """Ensure REPOWISE_EMBEDDER is set before the server starts.
+
+    Priority:
+      1. Already set in environment → nothing to do.
+      2. Saved in ~/.repowise/config.yaml → restore it (and its API key).
+      3. Prompt the user interactively → save choice for next time.
+    """
+    if os.environ.get("REPOWISE_EMBEDDER"):
+        return
+
+    # Check global config saved by a previous serve/init run.
+    cfg = load_config(Path.home())
+    saved_embedder = cfg.get("embedder", "")
+    if saved_embedder and saved_embedder != "mock":
+        os.environ["REPOWISE_EMBEDDER"] = saved_embedder
+        # Restore API key if saved alongside the config.
+        if cfg.get("embedder_api_key"):
+            _set_api_key_env(saved_embedder, cfg["embedder_api_key"])
+        return
+
+    # Detect which providers already have keys in the environment.
+    has_gemini = bool(
+        os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
+    )
+    has_openai = bool(os.environ.get("OPENAI_API_KEY"))
+
+    console.print(
+        "\n[bold]Chat & search require an embedder.[/bold] "
+        "Choose one or skip (other features still work).\n"
+    )
+
+    options = []
+    labels = []
+    if has_gemini:
+        options.append("gemini")
+        labels.append("[1] gemini  [green]✓ key set[/green]")
+    else:
+        options.append("gemini")
+        labels.append("[1] gemini  [dim]needs GEMINI_API_KEY / GOOGLE_API_KEY[/dim]")
+    if has_openai:
+        options.append("openai")
+        labels.append("[2] openai  [green]✓ key set[/green]")
+    else:
+        options.append("openai")
+        labels.append("[2] openai  [dim]needs OPENAI_API_KEY[/dim]")
+    options.append("skip")
+    labels.append("[3] skip    [dim]no chat/search[/dim]")
+
+    for label in labels:
+        console.print(f"  {label}")
+    console.print()
+
+    default = "1" if (has_gemini or has_openai) else "3"
+    raw = click.prompt("  Select", default=default).strip()
+
+    # Map number or name to option.
+    choice = raw if raw in options else (options[int(raw) - 1] if raw.isdigit() and 1 <= int(raw) <= len(options) else "skip")
+
+    if choice == "skip":
+        console.print("[dim]Skipping embedder — chat and search will be unavailable.[/dim]\n")
+        return
+
+    os.environ["REPOWISE_EMBEDDER"] = choice
+
+    # Ensure the API key is present; prompt if missing.
+    api_key = _get_or_prompt_api_key(choice)
+    if api_key:
+        _set_api_key_env(choice, api_key)
+
+    # Save choice (and key) to ~/.repowise/config.yaml for future runs.
+    _save_global_embedder(choice, api_key)
+    console.print()
+
+
+def _get_or_prompt_api_key(embedder: str) -> str:
+    """Return existing API key for *embedder* or prompt the user for one."""
+    if embedder == "gemini":
+        key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
+        if key:
+            return key
+        return click.prompt("  GEMINI_API_KEY", default="", show_default=False).strip()
+    if embedder == "openai":
+        key = os.environ.get("OPENAI_API_KEY", "")
+        if key:
+            return key
+        return click.prompt("  OPENAI_API_KEY", default="", show_default=False).strip()
+    return ""
+
+
+def _set_api_key_env(embedder: str, key: str) -> None:
+    if not key:
+        return
+    if embedder == "gemini":
+        os.environ.setdefault("GEMINI_API_KEY", key)
+    elif embedder == "openai":
+        os.environ.setdefault("OPENAI_API_KEY", key)
+
+
+def _save_global_embedder(embedder: str, api_key: str) -> None:
+    """Persist embedder choice to ~/.repowise/config.yaml."""
+    _GLOBAL_CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    config_path = _GLOBAL_CONFIG_DIR / "config.yaml"
+    try:
+        existing: dict = {}
+        if config_path.exists():
+            import yaml  # type: ignore[import-untyped]
+            existing = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+        existing["embedder"] = embedder
+        if api_key:
+            existing["embedder_api_key"] = api_key
+        import yaml  # type: ignore[import-untyped]
+        config_path.write_text(
+            yaml.dump(existing, default_flow_style=False, sort_keys=False),
+            encoding="utf-8",
+        )
+    except Exception:
+        pass  # Non-fatal — user just gets prompted again next time.
 
 _GITHUB_REPO = "RaghavChamadiya/repowise"
 _WEB_CACHE_DIR = Path.home() / ".repowise" / "web"
@@ -187,6 +309,17 @@ def serve_command(port: int, host: str, workers: int, ui_port: int, no_ui: bool)
     except ImportError:
         console.print("[red]uvicorn is not installed. Install it with: pip install repowise[/red]")
         raise SystemExit(1) from None
+
+    _setup_embedder()
+
+    # Auto-detect local .repowise/wiki.db if REPOWISE_DB_URL is not set.
+    # repowise init writes to <repo>/.repowise/wiki.db, so honour it when
+    # the user runs `repowise serve` from the same directory.
+    if not os.environ.get("REPOWISE_DB_URL"):
+        local_db = Path.cwd() / ".repowise" / "wiki.db"
+        if local_db.exists():
+            os.environ["REPOWISE_DB_URL"] = f"sqlite+aiosqlite:///{local_db}"
+            console.print(f"[dim]Using local database: {local_db}[/dim]")
 
     frontend_proc: subprocess.Popen | None = None
 

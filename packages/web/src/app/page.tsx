@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import { redirect } from "next/navigation";
 import Link from "next/link";
 import {
   FileText,
@@ -31,6 +32,11 @@ export default async function DashboardPage() {
 
   const repoList = repos.status === "fulfilled" ? repos.value : [];
   const jobList = jobs.status === "fulfilled" ? jobs.value : [];
+
+  // If there's exactly one repo, go straight to it — no need for a dashboard.
+  if (repoList.length === 1) {
+    redirect(`/repos/${repoList[0].id}`);
+  }
 
   // Aggregate stats across all repos
   const statsResults = await Promise.allSettled(

@@ -28,6 +28,19 @@ from repowise.cli.helpers import (
 )
 
 
+def _register_mcp_with_claude(console_obj: Any, repo_path: Path) -> None:
+    """Register the repowise MCP server with Claude Desktop and Claude Code."""
+    from repowise.cli.mcp_config import register_with_claude_desktop, register_with_claude_code
+
+    desktop = register_with_claude_desktop(repo_path)
+    if desktop:
+        console_obj.print(f"  [green]✓[/green] Claude Desktop MCP registered ({desktop})")
+
+    code = register_with_claude_code(repo_path)
+    if code:
+        console_obj.print(f"  [green]✓[/green] Claude Code MCP registered ({code})")
+
+
 def _maybe_generate_claude_md(
     console_obj: Any,
     repo_path: Path,
@@ -717,10 +730,16 @@ def init_command(
                 pass  # No yaml — commit_limit will use default next time
 
         # MCP config
-        from repowise.cli.mcp_config import save_mcp_config, save_root_mcp_config
+        from repowise.cli.mcp_config import (
+            save_mcp_config,
+            save_root_mcp_config,
+            register_with_claude_desktop,
+            register_with_claude_code,
+        )
 
         save_mcp_config(repo_path)
         save_root_mcp_config(repo_path)
+        _register_mcp_with_claude(console, repo_path)
 
         # .claude/CLAUDE.md (index-only: structural data is available)
         _maybe_generate_claude_md(console, repo_path, no_claude_md=no_claude_md)
@@ -1079,6 +1098,7 @@ def init_command(
 
     save_mcp_config(repo_path)
     save_root_mcp_config(repo_path)
+    _register_mcp_with_claude(console, repo_path)
 
     elapsed = time.monotonic() - start
 

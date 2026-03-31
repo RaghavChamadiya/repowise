@@ -1,9 +1,26 @@
-"""Auto-generated MCP config for Claude Code, Cursor, and Cline."""
+"""Auto-generated MCP config for Claude Code, Claude Desktop, Cursor, and Cline."""
 
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
+
+
+def _claude_desktop_config_path() -> Path | None:
+    """Return the Claude Desktop config path for this OS, or None if unsupported."""
+    if sys.platform == "darwin":
+        return Path.home() / "Library" / "Application Support" / "Claude" / "claude_desktop_config.json"
+    if sys.platform == "win32":
+        appdata = Path.home() / "AppData" / "Roaming"
+        return appdata / "Claude" / "claude_desktop_config.json"
+    # Linux / other: Claude Desktop not officially supported yet
+    return None
+
+
+def _claude_code_settings_path() -> Path:
+    """Return the global Claude Code settings path (~/.claude/settings.json)."""
+    return Path.home() / ".claude" / "settings.json"
 
 
 def generate_mcp_config(repo_path: Path) -> dict:
@@ -56,6 +73,56 @@ def save_root_mcp_config(repo_path: Path) -> Path:
 
     config_path.write_text(json.dumps(merged, indent=2) + "\n", encoding="utf-8")
     return config_path
+
+
+def _merge_mcp_entry(config_path: Path, new_entry: dict) -> bool:
+    """Merge *new_entry* into the mcpServers block of *config_path*.
+
+    Creates the file if it doesn't exist. Returns True on success.
+    """
+    try:
+        if config_path.exists():
+            try:
+                existing = json.loads(config_path.read_text(encoding="utf-8"))
+            except (json.JSONDecodeError, OSError):
+                existing = {}
+        else:
+            config_path.parent.mkdir(parents=True, exist_ok=True)
+            existing = {}
+
+        servers = dict(existing.get("mcpServers", {}))
+        servers.update(new_entry)
+        existing["mcpServers"] = servers
+        config_path.write_text(json.dumps(existing, indent=2) + "\n", encoding="utf-8")
+        return True
+    except OSError:
+        return False
+
+
+def register_with_claude_desktop(repo_path: Path) -> Path | None:
+    """Add repowise MCP server to Claude Desktop's config.
+
+    Returns the config path if successful, None if Claude Desktop is not
+    present or the platform is unsupported.
+    """
+    config_path = _claude_desktop_config_path()
+    if config_path is None:
+        return None
+    if not config_path.parent.exists():
+        # Claude Desktop not installed
+        return None
+    entry = generate_mcp_config(repo_path)["mcpServers"]
+    return config_path if _merge_mcp_entry(config_path, entry) else None
+
+
+def register_with_claude_code(repo_path: Path) -> Path | None:
+    """Add repowise MCP server to global Claude Code settings (~/.claude/settings.json).
+
+    Returns the settings path if successful, None on failure.
+    """
+    settings_path = _claude_code_settings_path()
+    entry = generate_mcp_config(repo_path)["mcpServers"]
+    return settings_path if _merge_mcp_entry(settings_path, entry) else None
 
 
 def format_setup_instructions(repo_path: Path) -> str:
