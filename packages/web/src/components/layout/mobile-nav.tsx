@@ -3,6 +3,7 @@
 import * as React from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import Image from "next/image";
 import {
   Menu,
   BookOpen,
@@ -71,38 +72,45 @@ export function MobileNav({ repos = [] }: MobileNavProps) {
   }, [pathname]);
 
   return (
-    <div className="flex md:hidden h-12 items-center gap-3 px-4 border-b border-[var(--color-border-default)] bg-[var(--color-bg-surface)] shrink-0">
+    <div className="flex md:hidden h-14 items-center gap-3 px-4 border-b border-[var(--color-border-default)] bg-[var(--color-bg-surface)] shrink-0">
       <Button
         variant="ghost"
         size="icon"
         onClick={() => setOpen(true)}
         aria-label="Open navigation menu"
-        className="h-8 w-8"
+        className="h-9 w-9"
       >
         <Menu className="h-5 w-5" />
       </Button>
-      {/* Current page breadcrumb */}
-      <div className="flex items-center gap-1.5 min-w-0">
-        <div className="flex h-5 w-5 items-center justify-center rounded bg-[var(--color-accent-primary)] shrink-0">
-          <BookOpen className="h-3 w-3 text-[var(--color-text-inverse)]" />
-        </div>
-        <span className="text-sm font-semibold text-[var(--color-text-primary)] tracking-tight truncate">
+      <div className="flex items-center gap-2 min-w-0">
+        <Image
+          src="/repowise-logo.png"
+          alt="repowise"
+          width={24}
+          height={24}
+          className="shrink-0 drop-shadow-[0_0_8px_rgba(245,149,32,0.3)]"
+        />
+        <span className="text-base font-semibold text-[var(--color-text-primary)] tracking-tight truncate">
           repowise
         </span>
       </div>
 
       <Sheet open={open} onOpenChange={setOpen}>
         <SheetContent side="left" className="p-0">
-          <SheetHeader className="border-b border-[var(--color-border-default)] h-12 flex-row items-center gap-2.5 py-0">
-            <div className="flex h-6 w-6 items-center justify-center rounded bg-[var(--color-accent-primary)] shrink-0">
-              <BookOpen className="h-3.5 w-3.5 text-[var(--color-text-inverse)]" />
-            </div>
-            <SheetTitle>repowise</SheetTitle>
+          <SheetHeader className="border-b border-[var(--color-border-default)] h-14 flex-row items-center gap-3 py-0 px-4">
+            <Image
+              src="/repowise-logo.png"
+              alt="repowise"
+              width={28}
+              height={28}
+              className="shrink-0 drop-shadow-[0_0_8px_rgba(245,149,32,0.3)]"
+            />
+            <SheetTitle className="text-base">repowise</SheetTitle>
           </SheetHeader>
 
           <ScrollArea className="flex-1">
-            <div className="p-2">
-              <nav className="space-y-0.5">
+            <div className="px-3 py-3">
+              <nav className="space-y-1">
                 {GLOBAL_NAV.map((item) => {
                   const Icon = item.icon;
                   const isActive = pathname === item.href;
@@ -111,13 +119,13 @@ export function MobileNav({ repos = [] }: MobileNavProps) {
                       key={item.href}
                       href={item.href}
                       className={cn(
-                        "flex items-center gap-2 rounded-md px-2 py-1.5 text-sm transition-colors",
+                        "flex items-center gap-2.5 rounded-lg px-2 py-2 text-sm transition-colors",
                         isActive
                           ? "bg-[var(--color-accent-muted)] text-[var(--color-accent-primary)]"
                           : "text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-elevated)] hover:text-[var(--color-text-primary)]",
                       )}
                     >
-                      <Icon className="h-4 w-4 shrink-0" />
+                      <Icon className="h-[18px] w-[18px] shrink-0" />
                       {item.label}
                     </Link>
                   );
@@ -126,8 +134,8 @@ export function MobileNav({ repos = [] }: MobileNavProps) {
 
               {repos.length > 0 && (
                 <>
-                  <Separator className="my-3" />
-                  <p className="mb-1.5 px-2 text-xs font-medium uppercase tracking-wider text-[var(--color-text-tertiary)]">
+                  <Separator className="my-4" />
+                  <p className="mb-2 px-2 text-xs font-medium uppercase tracking-wider text-[var(--color-text-tertiary)]">
                     Repositories
                   </p>
                   <div className="space-y-0.5">
@@ -138,20 +146,20 @@ export function MobileNav({ repos = [] }: MobileNavProps) {
                         <div key={repo.id}>
                           <button
                             onClick={() => toggleRepo(repo.id)}
-                            className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-sm transition-colors hover:bg-[var(--color-bg-elevated)] text-[var(--color-text-secondary)]"
+                            className="flex w-full items-center gap-2.5 rounded-lg px-2 py-2 text-sm transition-colors hover:bg-[var(--color-bg-elevated)] text-[var(--color-text-secondary)]"
                           >
                             <Circle className="h-2 w-2 shrink-0 fill-[var(--color-text-tertiary)] text-[var(--color-text-tertiary)]" />
                             <span className="flex-1 truncate text-left font-medium">
                               {repo.name}
                             </span>
                             {isExpanded ? (
-                              <ChevronDown className="h-3.5 w-3.5 shrink-0 opacity-50" />
+                              <ChevronDown className="h-4 w-4 shrink-0 opacity-40" />
                             ) : (
-                              <ChevronRight className="h-3.5 w-3.5 shrink-0 opacity-50" />
+                              <ChevronRight className="h-4 w-4 shrink-0 opacity-40" />
                             )}
                           </button>
                           {isExpanded && (
-                            <div className="ml-3 mt-0.5 space-y-0.5 border-l border-[var(--color-border-default)] pl-3">
+                            <div className="ml-3.5 mt-0.5 space-y-0.5 border-l border-[var(--color-border-default)] pl-3">
                               {navItems.map((item) => {
                                 const Icon = item.icon;
                                 const isActive =
@@ -162,13 +170,13 @@ export function MobileNav({ repos = [] }: MobileNavProps) {
                                     key={item.href}
                                     href={item.href}
                                     className={cn(
-                                      "flex items-center gap-2 rounded-md px-2 py-1 text-xs transition-colors",
+                                      "flex items-center gap-2.5 rounded-lg px-2 py-1.5 text-[13px] transition-colors",
                                       isActive
                                         ? "bg-[var(--color-accent-muted)] text-[var(--color-accent-primary)]"
                                         : "text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-elevated)] hover:text-[var(--color-text-primary)]",
                                     )}
                                   >
-                                    <Icon className="h-3.5 w-3.5 shrink-0" />
+                                    <Icon className="h-4 w-4 shrink-0" />
                                     {item.label}
                                   </Link>
                                 );
@@ -179,7 +187,7 @@ export function MobileNav({ repos = [] }: MobileNavProps) {
                       );
                     })}
                   </div>
-                  <div className="mt-1 px-0.5">
+                  <div className="mt-2 px-0.5">
                     <AddRepoDialog variant="sidebar" />
                   </div>
                 </>
@@ -187,7 +195,7 @@ export function MobileNav({ repos = [] }: MobileNavProps) {
 
               {repos.length === 0 && (
                 <>
-                  <Separator className="my-3" />
+                  <Separator className="my-4" />
                   <div className="px-0.5">
                     <AddRepoDialog variant="sidebar" />
                   </div>
@@ -196,8 +204,8 @@ export function MobileNav({ repos = [] }: MobileNavProps) {
             </div>
           </ScrollArea>
 
-          <div className="border-t border-[var(--color-border-default)] p-3">
-            <p className="text-xs text-[var(--color-text-tertiary)] text-center">repowise v0.1.0</p>
+          <div className="border-t border-[var(--color-border-default)] px-4 py-3">
+            <p className="text-xs text-[var(--color-text-tertiary)]">repowise v0.1.0</p>
           </div>
         </SheetContent>
       </Sheet>

@@ -11,33 +11,33 @@
   /* ------------------------------------------------------------------ */
   /* Core Surfaces                                                       */
   /* ------------------------------------------------------------------ */
-  --color-bg-root: #0a0a0a;
-  --color-bg-surface: #111111;
-  --color-bg-elevated: #171717;
-  --color-bg-overlay: #1a1a1a;
-  --color-bg-inset: #080808;
+  --color-bg-root: #0d0d0d;
+  --color-bg-surface: #141414;
+  --color-bg-elevated: #1c1c1c;
+  --color-bg-overlay: #202020;
+  --color-bg-inset: #0a0a0a;
 
   /* ------------------------------------------------------------------ */
   /* Borders                                                             */
   /* ------------------------------------------------------------------ */
-  --color-border-default: rgba(255, 255, 255, 0.08);
-  --color-border-hover: rgba(255, 255, 255, 0.15);
-  --color-border-active: rgba(255, 255, 255, 0.25);
+  --color-border-default: rgba(255, 255, 255, 0.06);
+  --color-border-hover: rgba(255, 255, 255, 0.12);
+  --color-border-active: rgba(255, 255, 255, 0.20);
 
   /* ------------------------------------------------------------------ */
   /* Text                                                                */
   /* ------------------------------------------------------------------ */
-  --color-text-primary: #f0f0f0;
-  --color-text-secondary: #a0a0a0;
-  --color-text-tertiary: #666666;
-  --color-text-inverse: #0a0a0a;
+  --color-text-primary: #ececec;
+  --color-text-secondary: #999999;
+  --color-text-tertiary: #5c5c5c;
+  --color-text-inverse: #0d0d0d;
 
   /* ------------------------------------------------------------------ */
-  /* Accent — repowise Blue                                              */
+  /* Accent — repowise Orange                                            */
   /* ------------------------------------------------------------------ */
-  --color-accent-primary: #5b9cf6;
-  --color-accent-hover: #7bb3f7;
-  --color-accent-muted: rgba(91, 156, 246, 0.15);
+  --color-accent-primary: #f59520;
+  --color-accent-hover: #f7a94d;
+  --color-accent-muted: rgba(245, 149, 32, 0.15);
 
   /* ------------------------------------------------------------------ */
   /* Confidence System                                                   */
@@ -52,7 +52,7 @@
   --color-success: #22c55e;
   --color-warning: #eab308;
   --color-error: #ef4444;
-  --color-info: #5b9cf6;
+  --color-info: #f59520;
 
   /* ------------------------------------------------------------------ */
   /* Graph — React Flow                                                  */
@@ -79,7 +79,7 @@
   /* ------------------------------------------------------------------ */
   /* Edge Colors (graph edges)                                           */
   /* ------------------------------------------------------------------ */
-  --color-edge-imports: #5b9cf6;
+  --color-edge-imports: #f59520;
   --color-edge-calls: #22c55e;
   --color-edge-inherits: #a855f7;
   --color-edge-implements: #ec4899;
@@ -91,13 +91,13 @@
   --font-sans: "Geist", "Inter", -apple-system, BlinkMacSystemFont, sans-serif;
   --font-mono: "Geist Mono", "JetBrains Mono", "Fira Code", monospace;
 
-  --text-xs: 0.75rem;
-  --text-sm: 0.8125rem;
-  --text-base: 0.875rem;
-  --text-lg: 1rem;
-  --text-xl: 1.25rem;
-  --text-2xl: 1.5rem;
-  --text-3xl: 2rem;
+  --text-xs: 0.8125rem;
+  --text-sm: 0.875rem;
+  --text-base: 0.9375rem;
+  --text-lg: 1.0625rem;
+  --text-xl: 1.375rem;
+  --text-2xl: 1.75rem;
+  --text-3xl: 2.25rem;
 
   --leading-tight: 1.3;
   --leading-normal: 1.5;
@@ -120,10 +120,10 @@
   /* ------------------------------------------------------------------ */
   /* Radii                                                               */
   /* ------------------------------------------------------------------ */
-  --radius-sm: 4px;
-  --radius-md: 6px;
-  --radius-lg: 8px;
-  --radius-xl: 12px;
+  --radius-sm: 6px;
+  --radius-md: 8px;
+  --radius-lg: 10px;
+  --radius-xl: 14px;
 
   /* ------------------------------------------------------------------ */
   /* Z-Index Scale                                                       */
@@ -290,7 +290,7 @@ body {
   --xy-controls-button-border-color: var(--color-border-default);
   --xy-controls-button-color: var(--color-text-secondary);
   --xy-controls-button-color-hover: var(--color-text-primary);
-  --xy-edge-stroke: rgba(91, 156, 246, 0.3);
+  --xy-edge-stroke: rgba(245, 149, 32, 0.3);
   --xy-edge-stroke-selected: var(--color-accent-graph);
   --xy-node-border-radius: var(--radius-lg);
 }

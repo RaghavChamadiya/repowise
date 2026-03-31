@@ -1,6 +1,7 @@
 "use client";
 
-import { Bot, User } from "lucide-react";
+import Image from "next/image";
+import { User } from "lucide-react";
 import { cn } from "@/lib/utils/cn";
 import { ToolCallBlock } from "./tool-call-block";
 import { ChatMarkdown } from "./chat-markdown";
@@ -17,20 +18,26 @@ export function ChatMessage({ message, repoId, onViewArtifact }: ChatMessageProp
   const isUser = message.role === "user";
 
   return (
-    <div className={cn("flex gap-3", isUser && "flex-row-reverse")}>
+    <div className={cn("flex gap-3.5", isUser && "flex-row-reverse")}>
       {/* Avatar */}
       <div
         className={cn(
-          "flex h-7 w-7 shrink-0 items-center justify-center rounded-full mt-0.5",
+          "flex shrink-0 items-center justify-center rounded-full mt-0.5",
           isUser
-            ? "bg-[var(--color-accent-primary)]"
-            : "bg-[var(--color-bg-elevated)] border border-[var(--color-border-default)]",
+            ? "h-8 w-8 bg-[var(--color-accent-primary)]"
+            : "h-8 w-8 bg-[var(--color-bg-elevated)] border border-[var(--color-border-default)]",
         )}
       >
         {isUser ? (
-          <User className="h-3.5 w-3.5 text-white" />
+          <User className="h-4 w-4 text-white" />
         ) : (
-          <Bot className="h-3.5 w-3.5 text-[var(--color-text-tertiary)]" />
+          <Image
+            src="/repowise-logo.png"
+            alt="repowise"
+            width={22}
+            height={22}
+            className="drop-shadow-[0_0_4px_rgba(245,149,32,0.25)]"
+          />
         )}
       </div>
 
@@ -43,14 +50,14 @@ export function ChatMessage({ message, repoId, onViewArtifact }: ChatMessageProp
       >
         {/* User message */}
         {isUser && (
-          <div className="rounded-2xl rounded-tr-sm bg-[var(--color-accent-primary)] px-3.5 py-2 text-sm text-white max-w-[85%]">
+          <div className="rounded-2xl rounded-tr-sm bg-[var(--color-accent-primary)] px-4 py-2.5 text-sm text-white max-w-[85%]">
             {message.text}
           </div>
         )}
 
         {/* Assistant message */}
         {!isUser && (
-          <div className="max-w-full space-y-1">
+          <div className="max-w-full space-y-1.5">
             {/* Tool calls */}
             {message.toolCalls.length > 0 && (
               <div className="space-y-1">

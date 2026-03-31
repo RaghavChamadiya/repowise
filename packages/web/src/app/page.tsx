@@ -70,11 +70,11 @@ export default async function DashboardPage() {
   const stalePages = totalPages - freshPages;
 
   return (
-    <div className="p-4 sm:p-6 space-y-6 max-w-[1200px]">
+    <div className="p-5 sm:p-8 space-y-8 max-w-[1200px]">
       {/* Header */}
       <div>
-        <h1 className="text-xl font-semibold text-[var(--color-text-primary)]">Dashboard</h1>
-        <p className="text-sm text-[var(--color-text-secondary)] mt-0.5">
+        <h1 className="text-2xl font-semibold text-[var(--color-text-primary)]">Dashboard</h1>
+        <p className="text-sm text-[var(--color-text-secondary)] mt-1">
           {repoList.length} {repoList.length === 1 ? "repository" : "repositories"} registered
         </p>
       </div>

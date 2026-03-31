@@ -3,6 +3,7 @@
 import * as React from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import Image from "next/image";
 import {
   LayoutDashboard,
   BookOpen,
@@ -39,6 +40,7 @@ const GLOBAL_NAV: NavItem[] = [
   { label: "Settings", href: "/settings", icon: Settings },
 ];
 
+
 function repoNavItems(repoId: string): NavItem[] {
   return [
     { label: "Chat", href: `/repos/${repoId}`, icon: MessageSquare },
@@ -65,7 +67,6 @@ export function Sidebar({ repos = [], activeRepoId }: SidebarProps) {
   const [expandedRepos, setExpandedRepos] = React.useState<Set<string>>(
     activeRepoId ? new Set([activeRepoId]) : new Set(),
   );
-  // On lg screens, start expanded if a repo is active
   const [collapsed, setCollapsed] = React.useState(false);
 
   const toggleRepo = (id: string) => {
@@ -83,32 +84,36 @@ export function Sidebar({ repos = [], activeRepoId }: SidebarProps) {
     <aside
       className={cn(
         "hidden md:flex h-full flex-col border-r border-[var(--color-border-default)] bg-[var(--color-bg-surface)] transition-all duration-200 shrink-0",
-        isIconOnly ? "w-[52px]" : "w-[260px]",
+        isIconOnly ? "w-[56px]" : "w-[260px]",
       )}
     >
       {/* Logo */}
-      <div className="flex h-12 items-center gap-2.5 px-3 border-b border-[var(--color-border-default)]">
-        <div className="flex h-6 w-6 items-center justify-center rounded bg-[var(--color-accent-primary)] shrink-0">
-          <BookOpen className="h-3.5 w-3.5 text-[var(--color-text-inverse)]" />
-        </div>
+      <div className="flex h-14 items-center gap-3 px-4">
+        <Image
+          src="/repowise-logo.png"
+          alt="repowise"
+          width={28}
+          height={28}
+          className="shrink-0 drop-shadow-[0_0_8px_rgba(245,149,32,0.3)]"
+        />
         {!isIconOnly && (
-          <span className="text-sm font-semibold text-[var(--color-text-primary)] tracking-tight flex-1 truncate">
+          <span className="text-base font-semibold text-[var(--color-text-primary)] tracking-tight flex-1 truncate">
             repowise
           </span>
         )}
         <button
           onClick={() => setCollapsed((c) => !c)}
-          className="ml-auto shrink-0 rounded p-1 text-[var(--color-text-tertiary)] hover:bg-[var(--color-bg-elevated)] hover:text-[var(--color-text-secondary)] transition-colors"
+          className="ml-auto shrink-0 rounded-md p-1.5 text-[var(--color-text-tertiary)] hover:bg-[var(--color-bg-elevated)] hover:text-[var(--color-text-secondary)] transition-colors"
           aria-label={isIconOnly ? "Expand sidebar" : "Collapse sidebar"}
         >
-          <PanelLeft className={cn("h-3.5 w-3.5 transition-transform", isIconOnly && "rotate-180")} />
+          <PanelLeft className={cn("h-4 w-4 transition-transform", isIconOnly && "rotate-180")} />
         </button>
       </div>
 
       <ScrollArea className="flex-1">
-        <div className={cn("p-2", isIconOnly && "px-1.5")}>
+        <div className={cn("px-3 py-2", isIconOnly && "px-2")}>
           {/* Global nav */}
-          <nav className="space-y-0.5">
+          <nav className="space-y-1">
             {GLOBAL_NAV.map((item) => (
               <SidebarNavItem
                 key={item.href}
@@ -117,19 +122,20 @@ export function Sidebar({ repos = [], activeRepoId }: SidebarProps) {
                 iconOnly={isIconOnly}
               />
             ))}
+
           </nav>
 
           {repos.length > 0 && (
             <>
               {!isIconOnly && (
                 <>
-                  <Separator className="my-3" />
-                  <p className="mb-1.5 px-2 text-xs font-medium uppercase tracking-wider text-[var(--color-text-tertiary)]">
+                  <Separator className="my-4" />
+                  <p className="mb-2 px-2 text-xs font-medium uppercase tracking-wider text-[var(--color-text-tertiary)]">
                     Repositories
                   </p>
                 </>
               )}
-              {isIconOnly && <Separator className="my-3" />}
+              {isIconOnly && <Separator className="my-4" />}
               <div className="space-y-0.5">
                 {repos.map((repo) => {
                   const isExpanded = expandedRepos.has(repo.id);
@@ -161,7 +167,7 @@ export function Sidebar({ repos = [], activeRepoId }: SidebarProps) {
                       <button
                         onClick={() => toggleRepo(repo.id)}
                         className={cn(
-                          "flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-sm transition-colors hover:bg-[var(--color-bg-elevated)]",
+                          "flex w-full items-center gap-2.5 rounded-lg px-2 py-2 text-sm transition-colors hover:bg-[var(--color-bg-elevated)]",
                           isActive
                             ? "text-[var(--color-text-primary)]"
                             : "text-[var(--color-text-secondary)]",
@@ -174,13 +180,13 @@ export function Sidebar({ repos = [], activeRepoId }: SidebarProps) {
                           {repo.name}
                         </span>
                         {isExpanded ? (
-                          <ChevronDown className="h-3.5 w-3.5 shrink-0 opacity-50" />
+                          <ChevronDown className="h-4 w-4 shrink-0 opacity-40" />
                         ) : (
-                          <ChevronRight className="h-3.5 w-3.5 shrink-0 opacity-50" />
+                          <ChevronRight className="h-4 w-4 shrink-0 opacity-40" />
                         )}
                       </button>
                       {isExpanded && (
-                        <div className="ml-3 mt-0.5 space-y-0.5 border-l border-[var(--color-border-default)] pl-3">
+                        <div className="ml-3.5 mt-0.5 space-y-0.5 border-l border-[var(--color-border-default)] pl-3">
                           {navItems.map((item) => (
                             <SidebarNavItem
                               key={item.href}
@@ -198,7 +204,7 @@ export function Sidebar({ repos = [], activeRepoId }: SidebarProps) {
               </div>
 
               {!isIconOnly && (
-                <div className="mt-1 px-0.5">
+                <div className="mt-2 px-0.5">
                   <AddRepoDialog variant="sidebar" />
                 </div>
               )}
@@ -207,7 +213,7 @@ export function Sidebar({ repos = [], activeRepoId }: SidebarProps) {
 
           {repos.length === 0 && !isIconOnly && (
             <>
-              <Separator className="my-3" />
+              <Separator className="my-4" />
               <div className="px-0.5">
                 <AddRepoDialog variant="sidebar" />
               </div>
@@ -218,8 +224,8 @@ export function Sidebar({ repos = [], activeRepoId }: SidebarProps) {
 
       {/* Footer */}
       {!isIconOnly && (
-        <div className="border-t border-[var(--color-border-default)] p-3">
-          <p className="text-xs text-[var(--color-text-tertiary)] text-center">
+        <div className="border-t border-[var(--color-border-default)] px-4 py-3">
+          <p className="text-xs text-[var(--color-text-tertiary)]">
             repowise v0.1.0
           </p>
         </div>
@@ -249,13 +255,13 @@ function SidebarNavItem({
             href={item.href}
             aria-label={item.label}
             className={cn(
-              "flex items-center justify-center rounded-md p-2 transition-colors",
+              "flex items-center justify-center rounded-lg p-2.5 transition-colors",
               isActive
                 ? "bg-[var(--color-accent-muted)] text-[var(--color-accent-primary)]"
                 : "text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-elevated)] hover:text-[var(--color-text-primary)]",
             )}
           >
-            <Icon className="h-4 w-4 shrink-0" />
+            <Icon className="h-4.5 w-4.5 shrink-0" />
           </Link>
         </TooltipTrigger>
         <TooltipContent side="right">{item.label}</TooltipContent>
@@ -267,15 +273,16 @@ function SidebarNavItem({
     <Link
       href={item.href}
       className={cn(
-        "flex items-center gap-2 rounded-md px-2 transition-colors",
-        size === "sm" ? "py-1 text-xs" : "py-1.5 text-sm",
+        "flex items-center gap-2.5 rounded-lg px-2 transition-colors",
+        size === "sm" ? "py-1.5 text-[13px]" : "py-2 text-sm",
         isActive
           ? "bg-[var(--color-accent-muted)] text-[var(--color-accent-primary)]"
           : "text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-elevated)] hover:text-[var(--color-text-primary)]",
       )}
     >
-      <Icon className={cn("shrink-0", size === "sm" ? "h-3.5 w-3.5" : "h-4 w-4")} />
+      <Icon className={cn("shrink-0", size === "sm" ? "h-4 w-4" : "h-[18px] w-[18px]")} />
       <span className="truncate">{item.label}</span>
     </Link>
   );
 }
+
