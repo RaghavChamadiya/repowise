@@ -7,7 +7,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "repowise"
-version = "0.1.21"
+version = "0.1.24"
 description = "Codebase intelligence for developers and AI — generates and maintains a structured wiki for any codebase"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -27,8 +27,8 @@ classifiers = [
 ]
 
 # ---------------------------------------------------------------------------
-# Core dependencies — everything needed for analysis + generation + CLI + server.
-# LLM/embedding provider SDKs are optional (see [project.optional-dependencies]).
+# Core dependencies — everything needed for analysis + generation + CLI + server,
+# including all LLM provider SDKs (anthropic, openai, google-genai, litellm).
 # ---------------------------------------------------------------------------
 dependencies = [
     # HTTP client
@@ -75,19 +75,17 @@ dependencies = [
     "mcp>=1.0,<2",
     "apscheduler>=3.10,<4",
     "cryptography>=43,<44",
+    # LLM providers (bundled — no extras needed)
+    "anthropic>=0.40,<1",
+    "openai>=1.50,<2",
+    "google-genai>=1.0,<2",
+    "litellm>=1.50,<2",
 ]
 
 [project.optional-dependencies]
-anthropic = ["anthropic>=0.40,<1"]
-openai = ["openai>=1.50,<2"]
-gemini = ["google-genai>=1.0,<2"]
-litellm = ["litellm>=1.50,<2"]
 postgres = [
     "pgvector>=0.3,<1",
     "asyncpg>=0.29,<1",
-]
-all = [
-    "repowise[anthropic,openai,gemini,litellm,postgres]",
 ]
 dev = [
     "pytest>=8,<9",

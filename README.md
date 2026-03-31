@@ -41,15 +41,7 @@ That's it. Claude walks you through choosing a mode, setting up your API key, an
 pip install repowise
 ```
 
-LLM providers are optional — install only the one you need:
-
-```bash
-pip install "repowise[anthropic]"    # Claude models
-pip install "repowise[openai]"       # GPT models
-pip install "repowise[gemini]"       # Gemini models
-pip install "repowise[litellm]"      # 100+ providers via LiteLLM
-pip install "repowise[all]"          # Everything
-```
+All LLM providers (Claude, GPT, Gemini, LiteLLM) are included out of the box.
 
 ## Quick Start
 

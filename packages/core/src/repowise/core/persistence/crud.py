@@ -907,6 +907,11 @@ async def upsert_decision(
 
     Dedup key: ``(repository_id, title, source, evidence_file)``.
     """
+    # Normalise text fields — LLM extractors may return explicit None
+    rationale = rationale or ""
+    context = context or ""
+    decision = decision or ""
+
     # Build the WHERE clause — evidence_file may be NULL
     q = select(DecisionRecord).where(
         DecisionRecord.repository_id == repository_id,
@@ -1101,9 +1106,9 @@ async def bulk_upsert_decisions(
                 repository_id=repository_id,
                 title=d.get("title", ""),
                 status=d.get("status", "proposed"),
-                context=d.get("context", ""),
-                decision=d.get("decision", ""),
-                rationale=d.get("rationale", ""),
+                context=d.get("context") or "",
+                decision=d.get("decision") or "",
+                rationale=d.get("rationale") or "",
                 alternatives=d.get("alternatives"),
                 consequences=d.get("consequences"),
                 affected_files=d.get("affected_files"),

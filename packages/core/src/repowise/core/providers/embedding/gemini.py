@@ -25,8 +25,13 @@ Dimensions:
 from __future__ import annotations
 
 import asyncio
+import logging
 import math
 import os
+
+# Suppress "Both GOOGLE_API_KEY and GEMINI_API_KEY are set" from google-genai SDK.
+# We resolve and pass the key explicitly, so the env-var conflict warning is noise.
+logging.getLogger("google_genai._api_client").setLevel(logging.ERROR)
 
 
 class GeminiEmbedder:

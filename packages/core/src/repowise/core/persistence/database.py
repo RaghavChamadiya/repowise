@@ -36,7 +36,12 @@ __all__ = [
     "init_db",
 ]
 
-_DEFAULT_URL = "sqlite+aiosqlite:///.repowise/wiki.db"
+def _default_db_url() -> str:
+    """Global SQLite DB at ~/.repowise/wiki.db — shared across all repos."""
+    from pathlib import Path
+    db_path = Path.home() / ".repowise" / "wiki.db"
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    return f"sqlite+aiosqlite:///{db_path}"
 
 
 def get_db_url(raw_url: str | None = None) -> str:
@@ -46,10 +51,10 @@ def get_db_url(raw_url: str | None = None) -> str:
     - ``postgresql://...``   → ``postgresql+asyncpg://...``
     - ``postgresql+psycopg://...`` → unchanged (explicit driver wins)
     - Already async-prefixed URLs are returned as-is.
-    - ``None`` → default SQLite path: ``sqlite+aiosqlite:///.repowise/wiki.db``
+    - ``None`` → global default: ``~/.repowise/wiki.db``
     """
     if raw_url is None:
-        return _DEFAULT_URL
+        return _default_db_url()
 
     url = raw_url.strip()
 

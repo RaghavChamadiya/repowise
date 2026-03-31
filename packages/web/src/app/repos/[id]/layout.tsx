@@ -1,3 +1,4 @@
+import { redirect } from "next/navigation";
 import { getRepo } from "@/lib/api/repos";
 
 interface RepoLayoutProps {
@@ -7,8 +8,12 @@ interface RepoLayoutProps {
 
 export default async function RepoLayout({ children, params }: RepoLayoutProps) {
   const { id } = await params;
-  // Repo data is fetched here so child pages can use it via server props.
-  // The sidebar is in the root layout and already has access to all repos.
-  // This layout just renders children — individual pages fetch their own data.
+  try {
+    await getRepo(id);
+  } catch {
+    // Repo doesn't exist in this database (e.g. stale URL from a previous
+    // project). Redirect to the dashboard so the user sees what's available.
+    redirect("/");
+  }
   return <>{children}</>;
 }
