@@ -142,6 +142,10 @@ docs/PYPI_RELEASE.md
 # Frontend (separate repo, not part of OSS)
 frontend/
 
+# Embedded repos
+fastapi/
+repowise-hosted-frontend/
+
 # Local dev artifacts
 .mcp.json
 !plugins/**/.mcp.json

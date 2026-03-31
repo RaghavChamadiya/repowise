@@ -159,7 +159,12 @@
       "Bash(/Users/swati.ahuja/Desktop/wise/repowise/venv/bin/python -m pytest tests/unit/persistence/test_vector_store.py::test_mock_embedder_returns_unit_vectors -v --tb=long)",
       "Bash(source venv/bin/activate)",
       "Bash(pip uninstall:*)",
-      "Bash(ruff check:*)"
+      "Bash(ruff check:*)",
+      "Bash(node:*)",
+      "Bash(pip show:*)",
+      "Read(//Users/swati.ahuja/**)",
+      "Bash(head -20 grep -rn \"wiki.db\\\\|db_path\\\\|database_url\\\\|engine\\\\|DB_URL\" /Users/swati.ahuja/Desktop/wise/repowise/packages/server/src/repowise/server/)",
+      "Bash(find /Users/swati.ahuja/Desktop/wise/repowise/venv/lib -path *repowise_core* -o -path *repowise/core*)"
     ]
   },
   "enableAllProjectMcpServers": true,

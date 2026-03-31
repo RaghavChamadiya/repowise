@@ -11,9 +11,14 @@ Recommended models:
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 
 import structlog
+
+# Suppress "Both GOOGLE_API_KEY and GEMINI_API_KEY are set" from google-genai SDK.
+# We resolve and pass the key explicitly, so the env-var conflict warning is noise.
+logging.getLogger("google_genai._api_client").setLevel(logging.ERROR)
 from tenacity import (
     RetryError,
     retry,
@@ -68,6 +73,7 @@ class GeminiProvider(BaseProvider):
                 "No API key found. Pass api_key= or set GEMINI_API_KEY / GOOGLE_API_KEY env var.",
             )
         self._rate_limiter = rate_limiter
+        self._client: object | None = None  # cached; created once on first call
 
     @property
     def provider_name(self) -> str:
@@ -131,7 +137,9 @@ class GeminiProvider(BaseProvider):
             from google import genai  # type: ignore[import-untyped]
             from google.genai import types as genai_types  # type: ignore[import-untyped]
 
-            client = genai.Client(api_key=api_key)
+            if self._client is None:
+                self._client = genai.Client(api_key=api_key)
+            client = self._client
             try:
                 response = client.models.generate_content(
                     model=model,
@@ -211,7 +219,9 @@ class GeminiProvider(BaseProvider):
             """Single Gemini generate_content call in thread."""
             from google import genai  # type: ignore[import-untyped]
 
-            client = genai.Client(api_key=api_key)
+            if self._client is None:
+                self._client = genai.Client(api_key=api_key)
+            client = self._client
             try:
                 response = client.models.generate_content(
                     model=model_name,
