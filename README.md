@@ -157,6 +157,27 @@ This is what happens when an AI agent has real codebase intelligence.
 
 ---
 
+## Local dashboard
+
+`repowise serve` starts a full web UI alongside the MCP server. No separate setup — browse your codebase intelligence directly in the browser.
+
+<img src=".github/assets/webui.gif" alt="repowise web UI" width="100%" />
+
+| View | What it shows |
+|---|---|
+| **Chat** | Ask anything about your codebase in natural language |
+| **Docs** | AI-generated wiki with syntax highlighting and Mermaid diagrams |
+| **Graph** | Interactive dependency graph — handles 2,000+ nodes |
+| **Search** | Full-text and semantic search with global command palette (Ctrl+K) |
+| **Symbols** | Searchable index of every function, class, and method |
+| **Coverage** | Doc freshness per file with one-click regeneration |
+| **Ownership** | Contributor attribution and bus factor risk |
+| **Hotspots** | Ranked high-churn files with commit history |
+| **Dead Code** | Unused code with confidence scores and bulk actions |
+| **Decisions** | Architectural decisions with staleness monitoring |
+
+---
+
 ## Auto-generated CLAUDE.md
 
 After every `repowise init` and `repowise update`, repowise regenerates your `CLAUDE.md` from actual codebase intelligence — not a template. No LLM calls. Under 5 seconds.
