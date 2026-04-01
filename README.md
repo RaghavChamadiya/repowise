@@ -1,7 +1,6 @@
 <div align="center">
 
 <img src=".github/assets/logo.png" width="280" alt="repowise" />
-
 **Codebase intelligence for AI-assisted engineering teams.**
 
 Four intelligence layers. Eight MCP tools. One `pip install`.

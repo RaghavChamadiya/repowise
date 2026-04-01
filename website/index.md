@@ -40,15 +40,8 @@ pip install repowise
 
 ## Get started
 
-<div class="d-flex flex-wrap gap-3 mt-4">
-
-**[60-second quickstart →](getting-started)**
-The fastest path to a working setup.
-
-**[Core concepts →](concepts)**
-Understand the four layers before diving in.
-
-**[CLI reference →](cli-reference)**
-Every command, flag, and option.
-
-</div>
+| | |
+|---|---|
+| [**60-second quickstart →**](getting-started) | The fastest path to a working setup. |
+| [**Core concepts →**](concepts) | Understand the four layers before diving in. |
+| [**CLI reference →**](cli-reference) | Every command, flag, and option. |
