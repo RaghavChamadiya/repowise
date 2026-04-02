@@ -12,6 +12,8 @@ Recommended models (as of 2026):
 
 from __future__ import annotations
 
+import os
+
 import structlog
 from anthropic import AsyncAnthropic
 from anthropic import RateLimitError as _AnthropicRateLimitError
@@ -48,7 +50,7 @@ class AnthropicProvider(BaseProvider):
     """Anthropic Claude provider with automatic prompt caching.
 
     Args:
-        api_key:      Anthropic API key. Reads ANTHROPIC_API_KEY env var if not set.
+        api_key:      Anthropic API key. Falls back to ANTHROPIC_API_KEY env var.
         model:        Model identifier. Defaults to claude-sonnet-4-6.
         rate_limiter: Optional pre-configured RateLimiter. If None, no rate limiting
                       is applied (useful when the caller manages concurrency via semaphore).
@@ -56,11 +58,17 @@ class AnthropicProvider(BaseProvider):
 
     def __init__(
         self,
-        api_key: str,
+        api_key: str | None = None,
         model: str = "claude-sonnet-4-6",
         rate_limiter: RateLimiter | None = None,
     ) -> None:
-        self._client = AsyncAnthropic(api_key=api_key)
+        resolved_key = api_key or os.environ.get("ANTHROPIC_API_KEY")
+        if not resolved_key:
+            raise ProviderError(
+                "anthropic",
+                "No API key provided. Pass api_key= or set ANTHROPIC_API_KEY.",
+            )
+        self._client = AsyncAnthropic(api_key=resolved_key)
         self._model = model
         self._rate_limiter = rate_limiter
 

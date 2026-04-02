@@ -29,6 +29,18 @@ def test_default_model():
     assert p.model_name == "claude-sonnet-4-6"
 
 
+def test_api_key_from_env(monkeypatch):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-env")
+    p = AnthropicProvider()
+    assert p.provider_name == "anthropic"
+
+
+def test_missing_api_key_raises(monkeypatch):
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    with pytest.raises(ProviderError):
+        AnthropicProvider()
+
+
 def test_opus_model():
     p = AnthropicProvider(api_key="sk-ant-test", model="claude-opus-4-6")
     assert p.model_name == "claude-opus-4-6"

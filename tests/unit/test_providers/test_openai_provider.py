@@ -29,6 +29,18 @@ def test_default_model_is_nano():
     assert p.model_name == "gpt-5.4-nano"
 
 
+def test_api_key_from_env(monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-env-test")
+    p = OpenAIProvider()
+    assert p.provider_name == "openai"
+
+
+def test_missing_api_key_raises(monkeypatch):
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    with pytest.raises(ProviderError):
+        OpenAIProvider()
+
+
 def test_custom_model():
     p = OpenAIProvider(api_key="sk-test", model="gpt-5.4-mini")
     assert p.model_name == "gpt-5.4-mini"
