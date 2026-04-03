@@ -464,7 +464,11 @@ async def _run_git_log(
     import subprocess
 
     def _sync_git_log() -> list[dict]:
+        import re
+
         results: list[dict] = []
+        # Sanitize stem to prevent argument injection via --grep
+        safe_stem = re.sub(r"[^a-zA-Z0-9_\-.]", "", stem) if stem else ""
         try:
             proc = subprocess.run(
                 ["git", "log", "--follow", "--format=%H\t%an\t%ai\t%s", "-20", "--", file_path],
@@ -487,9 +491,14 @@ async def _run_git_log(
                             }
                         )
 
-            if stem and len(stem) >= 3:
+            if safe_stem and len(safe_stem) >= 3:
                 proc2 = subprocess.run(
-                    ["git", "log", "--all", "--grep", stem, "--format=%H\t%an\t%ai\t%s", "-10"],
+                    [
+                        "git", "log", "--all",
+                        "--grep", safe_stem,
+                        "--format=%H\t%an\t%ai\t%s", "-10",
+                        "--",  # end of options — prevent argument injection
+                    ],
                     cwd=repo_path,
                     capture_output=True,
                     text=True,
