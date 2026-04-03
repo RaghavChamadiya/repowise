@@ -36,9 +36,11 @@ __all__ = [
     "init_db",
 ]
 
+
 def _default_db_url() -> str:
     """Global SQLite DB at ~/.repowise/wiki.db — shared across all repos."""
     from pathlib import Path
+
     db_path = Path.home() / ".repowise" / "wiki.db"
     db_path.parent.mkdir(parents=True, exist_ok=True)
     return f"sqlite+aiosqlite:///{db_path}"

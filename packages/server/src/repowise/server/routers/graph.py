@@ -366,14 +366,15 @@ async def dead_code_graph(
         "__init__.py",
         "conftest.py",
         "fixtures/",
-        "/app/",        # Next.js app router pages
-        "/pages/",      # Next.js pages router
-        "/routers/",    # FastAPI routers
-        "/commands/",   # CLI commands
+        "/app/",  # Next.js app router pages
+        "/pages/",  # Next.js pages router
+        "/routers/",  # FastAPI routers
+        "/commands/",  # CLI commands
         "/components/ui/",  # UI component library
     )
     dead_nodes = [
-        n for n in all_candidates
+        n
+        for n in all_candidates
         if not n.is_entry_point
         and not n.is_test
         and not any(pat in n.node_id for pat in _framework_patterns)

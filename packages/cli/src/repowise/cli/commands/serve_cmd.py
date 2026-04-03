@@ -39,9 +39,7 @@ def _setup_embedder() -> None:
         return
 
     # Detect which providers already have keys in the environment.
-    has_gemini = bool(
-        os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
-    )
+    has_gemini = bool(os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY"))
     has_openai = bool(os.environ.get("OPENAI_API_KEY"))
 
     console.print(
@@ -74,7 +72,11 @@ def _setup_embedder() -> None:
     raw = click.prompt("  Select", default=default).strip()
 
     # Map number or name to option.
-    choice = raw if raw in options else (options[int(raw) - 1] if raw.isdigit() and 1 <= int(raw) <= len(options) else "skip")
+    choice = (
+        raw
+        if raw in options
+        else (options[int(raw) - 1] if raw.isdigit() and 1 <= int(raw) <= len(options) else "skip")
+    )
 
     if choice == "skip":
         console.print("[dim]Skipping embedder — chat and search will be unavailable.[/dim]\n")
@@ -124,17 +126,20 @@ def _save_global_embedder(embedder: str, api_key: str) -> None:
         existing: dict = {}
         if config_path.exists():
             import yaml  # type: ignore[import-untyped]
+
             existing = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
         existing["embedder"] = embedder
         if api_key:
             existing["embedder_api_key"] = api_key
         import yaml  # type: ignore[import-untyped]
+
         config_path.write_text(
             yaml.dump(existing, default_flow_style=False, sort_keys=False),
             encoding="utf-8",
         )
     except Exception:
         pass  # Non-fatal — user just gets prompted again next time.
+
 
 _GITHUB_REPO = "RaghavChamadiya/repowise"
 _WEB_CACHE_DIR = Path.home() / ".repowise" / "web"
@@ -345,7 +350,9 @@ def serve_command(port: int, host: str, workers: int, ui_port: int, no_ui: bool)
             if not ready:
                 local_web = _find_local_web()
                 if local_web:
-                    standalone = local_web / ".next" / "standalone" / "packages" / "web" / "server.js"
+                    standalone = (
+                        local_web / ".next" / "standalone" / "packages" / "web" / "server.js"
+                    )
                     if standalone.exists():
                         ready = True
                     elif npm:

@@ -69,7 +69,9 @@ async def get_hotspots(
             lines_added_90d=r.lines_added_90d or 0,
             lines_deleted_90d=r.lines_deleted_90d or 0,
             avg_commit_size=r.avg_commit_size or 0.0,
-            commit_categories=json.loads(r.commit_categories_json) if r.commit_categories_json else {},
+            commit_categories=json.loads(r.commit_categories_json)
+            if r.commit_categories_json
+            else {},
         )
         for r in rows
     ]
@@ -171,10 +173,7 @@ async def get_git_summary(
             owners[m.primary_owner_name] = owners.get(m.primary_owner_name, 0) + 1
     total = len(all_meta) or 1
     top_owners = sorted(
-        [
-            {"name": k, "file_count": v, "pct": v / total}
-            for k, v in owners.items()
-        ],
+        [{"name": k, "file_count": v, "pct": v / total} for k, v in owners.items()],
         key=lambda x: x["file_count"],
         reverse=True,
     )[:10]

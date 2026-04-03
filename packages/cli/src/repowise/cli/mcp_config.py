@@ -10,7 +10,13 @@ from pathlib import Path
 def _claude_desktop_config_path() -> Path | None:
     """Return the Claude Desktop config path for this OS, or None if unsupported."""
     if sys.platform == "darwin":
-        return Path.home() / "Library" / "Application Support" / "Claude" / "claude_desktop_config.json"
+        return (
+            Path.home()
+            / "Library"
+            / "Application Support"
+            / "Claude"
+            / "claude_desktop_config.json"
+        )
     if sys.platform == "win32":
         appdata = Path.home() / "AppData" / "Roaming"
         return appdata / "Claude" / "claude_desktop_config.json"

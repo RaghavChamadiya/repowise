@@ -344,7 +344,9 @@ class GitMetadataResponse(BaseModel):
             lines_added_90d=obj.lines_added_90d or 0,  # type: ignore[attr-defined]
             lines_deleted_90d=obj.lines_deleted_90d or 0,  # type: ignore[attr-defined]
             avg_commit_size=obj.avg_commit_size or 0.0,  # type: ignore[attr-defined]
-            commit_categories=json.loads(obj.commit_categories_json) if obj.commit_categories_json else {},  # type: ignore[attr-defined]
+            commit_categories=json.loads(obj.commit_categories_json)
+            if obj.commit_categories_json
+            else {},  # type: ignore[attr-defined]
             merge_commit_count_90d=obj.merge_commit_count_90d or 0,  # type: ignore[attr-defined]
         )
 
