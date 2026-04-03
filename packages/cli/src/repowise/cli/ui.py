@@ -528,3 +528,57 @@ def format_elapsed(seconds: float) -> str:
         s = int(seconds) % 60
         return f"{m}m {s}s"
     return f"{seconds:.1f}s"
+
+
+# ---------------------------------------------------------------------------
+# Rich progress callback — implements core ProgressCallback protocol
+# ---------------------------------------------------------------------------
+
+_PHASE_LABELS: dict[str, str] = {
+    "traverse": "Traversing files...",
+    "parse": "Parsing files...",
+    "graph": "Building dependency graph...",
+    "git": "Indexing file history...",
+    "co_change": "Analyzing co-changes...",
+    "dead_code": "Detecting dead code...",
+    "decisions": "Extracting decisions...",
+    "generation": "Generating pages...",
+}
+
+
+class RichProgressCallback:
+    """Adapter that implements ``repowise.core.pipeline.ProgressCallback``
+    using a Rich ``Progress`` instance for terminal display.
+
+    Usage::
+
+        from rich.progress import Progress
+        with Progress(...) as progress_bar:
+            callback = RichProgressCallback(progress_bar, console)
+            result = run_async(run_pipeline(..., progress=callback))
+    """
+
+    def __init__(self, progress: Any, console: Console) -> None:
+        self._progress = progress
+        self._console = console
+        self._tasks: dict[str, Any] = {}
+
+    def on_phase_start(self, phase: str, total: int | None) -> None:
+        label = _PHASE_LABELS.get(phase, f"{phase}...")
+        # If phase already has a task, update its total and make visible
+        if phase in self._tasks:
+            self._progress.update(self._tasks[phase], total=total, visible=True)
+        else:
+            self._tasks[phase] = self._progress.add_task(label, total=total, visible=True)
+
+    def on_item_done(self, phase: str) -> None:
+        if phase in self._tasks:
+            self._progress.advance(self._tasks[phase])
+
+    def on_message(self, level: str, text: str) -> None:
+        style_map = {"info": OK, "warning": WARN, "error": ERR}
+        style = style_map.get(level, "")
+        if style:
+            self._progress.console.print(f"  [{style}]{text}[/{style}]")
+        else:
+            self._progress.console.print(f"  {text}")
