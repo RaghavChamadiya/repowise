@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import json
 from datetime import datetime
+from pathlib import Path
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 # ---------------------------------------------------------------------------
 # Repository
@@ -18,6 +19,18 @@ class RepoCreate(BaseModel):
     url: str = ""
     default_branch: str = "main"
     settings: dict | None = None
+
+    @field_validator("local_path")
+    @classmethod
+    def validate_local_path(cls, v: str) -> str:
+        resolved = Path(v).resolve()
+        if ".." in Path(v).parts:
+            raise ValueError("local_path must not contain '..' segments")
+        if not resolved.is_dir():
+            raise ValueError(f"local_path does not exist or is not a directory: {resolved}")
+        if not (resolved / ".git").exists():
+            raise ValueError(f"local_path is not a git repository (no .git found): {resolved}")
+        return str(resolved)
 
 
 class RepoUpdate(BaseModel):
