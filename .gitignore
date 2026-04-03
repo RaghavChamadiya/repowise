@@ -1,3 +1,11 @@
+# Hosted backend (private, not part of the open-source project)
+backend/
+hosted_backend_plan/
+migrations/
+
+# Outreach / marketing data
+repowise_outreach_targets.csv
+
 # IDE/tool caches
 .sfdx/
 
