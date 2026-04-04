@@ -77,9 +77,9 @@ dependencies = [
     "cryptography>=43,<44",
     # LLM providers (bundled — no extras needed)
     "anthropic>=0.40,<1",
-    "openai>=1.50,<2",
+    "openai>=1.50,<3",
     "google-genai>=1.0,<2",
-    "litellm>=1.50,<2",
+    "litellm>=1.83.0,<2",
 ]
 
 [project.optional-dependencies]
@@ -195,7 +195,7 @@ known-first-party = ["repowise"]
 # mypy — strict type checking
 # ---------------------------------------------------------------------------
 [tool.mypy]
-python_version = "0.1.30"
+python_version = "3.11"
 warn_unused_configs = true
 show_error_codes = true
 namespace_packages = true
