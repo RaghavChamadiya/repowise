@@ -48,13 +48,13 @@ RUN pip install --no-cache-dir ".[all]"
 # Copy built Next.js standalone output
 COPY --from=frontend-builder /app/.next/standalone /app/web
 COPY --from=frontend-builder /app/.next/static /app/web/.next/static
-COPY --from=frontend-builder /app/public /app/web/public 2>/dev/null || true
+COPY --from=frontend-builder /app/public /app/web/public
 
 # Data volume for .repowise directory
 VOLUME /data
 
 # Environment defaults
-ENV REPOWISE_DB_URL=sqlite+aiosqlite:///data/wiki.db
+ENV REPOWISE_DB_URL=sqlite+aiosqlite:////data/wiki.db
 ENV REPOWISE_EMBEDDER=mock
 ENV PORT_BACKEND=7337
 ENV PORT_FRONTEND=3000

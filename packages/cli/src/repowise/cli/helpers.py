@@ -70,13 +70,13 @@ def get_db_url_for_repo(repo_path: Path) -> str:
     """Return a database URL for this repo.
 
     If ``REPOWISE_DB_URL`` is set in the environment that URL is used.
-    Otherwise defaults to the global ``~/.repowise/wiki.db`` so all repos
-    are visible in one ``repowise serve`` regardless of working directory.
+    Otherwise defaults to ``<repo>/.repowise/wiki.db`` — a per-repo SQLite
+    database co-located with the other repowise artifacts.
     """
     env_url = os.environ.get("REPOWISE_DB_URL")
     if env_url:
         return env_url
-    db_path = Path.home() / REPOWISE_DIR / DB_FILENAME
+    db_path = repo_path / REPOWISE_DIR / DB_FILENAME
     db_path.parent.mkdir(parents=True, exist_ok=True)
     return f"sqlite+aiosqlite:///{db_path}"
 
