@@ -79,7 +79,7 @@ dependencies = [
     "anthropic>=0.40,<1",
     "openai>=1.50,<2",
     "google-genai>=1.0,<2",
-    "litellm>=1.50,<2",
+    "litellm>=1.83.0,<2",
 ]
 
 [project.optional-dependencies]
