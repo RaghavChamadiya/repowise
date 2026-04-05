@@ -325,7 +325,7 @@ async def _run_ingestion(
     parser = ASTParser()
     parsed_files: list[Any] = []
     source_map: dict[str, bytes] = {}
-    graph_builder = GraphBuilder()
+    graph_builder = GraphBuilder(repo_path=repo_path)
 
     for fi in file_infos:
         try:
@@ -363,6 +363,14 @@ async def _run_ingestion(
             f"Skipped {traverser._oversized_skip_count} oversized files "
             f"(>{traverser.max_file_size_bytes // 1024} KB)",
         )
+        for path, size_bytes in sorted(
+            traverser._oversized_files, key=lambda x: x[1], reverse=True
+        ):
+            logger.info(
+                "oversized_file_skipped",
+                path=path,
+                size_kb=size_bytes // 1024,
+            )
 
     return parsed_files, file_infos, repo_structure, source_map, graph_builder
 
@@ -473,7 +481,7 @@ async def _run_decision_extraction(
             git_meta_map=git_meta_map,
             parsed_files=parsed_files,
         )
-        report = await extractor.extract_all()
+        report = await asyncio.wait_for(extractor.extract_all(), timeout=300)
 
         if progress:
             inline = report.by_source.get("inline_marker", 0)
