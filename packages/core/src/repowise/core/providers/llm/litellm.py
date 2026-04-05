@@ -19,13 +19,16 @@ Reference: https://docs.litellm.ai/docs/providers
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
+from typing import Any
+
 import structlog
 from tenacity import (
+    RetryError,
     retry,
     retry_if_exception_type,
     stop_after_attempt,
     wait_exponential_jitter,
-    RetryError,
 )
 
 from repowise.core.providers.llm.base import (
@@ -36,8 +39,6 @@ from repowise.core.providers.llm.base import (
     ProviderError,
     RateLimitError,
 )
-
-from typing import Any, AsyncIterator
 from repowise.core.rate_limiter import RateLimiter
 
 log = structlog.get_logger(__name__)
@@ -52,9 +53,13 @@ class LiteLLMProvider(BaseProvider):
 
     Args:
         model:        LiteLLM model string (e.g., "groq/llama-3.1-70b-versatile").
+                      When using api_base (local proxy), just use the model name
+                      (e.g., "zai.glm-5") - the provider will auto-add "openai/" prefix.
         api_key:      API key for the target provider. Some providers read from
                       environment variables (e.g., GROQ_API_KEY, TOGETHER_API_KEY).
-        api_base:     Optional custom API base URL (e.g., for self-hosted deployments).
+                      For local proxies without auth, a dummy key is used.
+        api_base:     Optional custom API base URL for self-hosted LiteLLM proxy.
+                      When set, the model is treated as OpenAI-compatible.
         rate_limiter: Optional RateLimiter instance.
     """
 
@@ -69,6 +74,13 @@ class LiteLLMProvider(BaseProvider):
         self._api_key = api_key
         self._api_base = api_base
         self._rate_limiter = rate_limiter
+
+        # When using a custom api_base (proxy), treat model as OpenAI-compatible.
+        # LiteLLM requires "openai/" prefix to route to custom endpoints.
+        if api_base and not model.startswith("openai/"):
+            self._litellm_model = f"openai/{model}"
+        else:
+            self._litellm_model = model
 
     @property
     def provider_name(self) -> str:
@@ -125,7 +137,7 @@ class LiteLLMProvider(BaseProvider):
         litellm.suppress_debug_info = True
 
         call_kwargs: dict[str, object] = {
-            "model": self._model,
+            "model": self._litellm_model,
             "messages": [
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt},
@@ -137,6 +149,10 @@ class LiteLLMProvider(BaseProvider):
             call_kwargs["api_key"] = self._api_key
         if self._api_base:
             call_kwargs["api_base"] = self._api_base
+            # Local proxy without auth: OpenAI SDK still requires a key.
+            # Use a dummy key if none provided.
+            if not self._api_key:
+                call_kwargs["api_key"] = "sk-dummy"
 
         try:
             response = await litellm.acompletion(**call_kwargs)
@@ -177,6 +193,7 @@ class LiteLLMProvider(BaseProvider):
         tool_executor: Any | None = None,
     ) -> AsyncIterator[ChatStreamEvent]:
         import json as _json
+
         import litellm  # type: ignore[import-untyped]
 
         litellm.set_verbose = False
@@ -184,7 +201,7 @@ class LiteLLMProvider(BaseProvider):
 
         full_messages = [{"role": "system", "content": system_prompt}, *messages]
         call_kwargs: dict[str, Any] = {
-            "model": self._model,
+            "model": self._litellm_model,
             "messages": full_messages,
             "temperature": temperature,
             "max_tokens": max_tokens,
@@ -196,6 +213,10 @@ class LiteLLMProvider(BaseProvider):
             call_kwargs["api_key"] = self._api_key
         if self._api_base:
             call_kwargs["api_base"] = self._api_base
+            # Local proxy without auth: OpenAI SDK still requires a key.
+            # Use a dummy key if none provided.
+            if not self._api_key:
+                call_kwargs["api_key"] = "sk-dummy"
 
         try:
             stream = await litellm.acompletion(**call_kwargs)
@@ -222,7 +243,11 @@ class LiteLLMProvider(BaseProvider):
                     for tc_delta in delta.tool_calls:
                         idx = tc_delta.index
                         if idx not in tool_calls_acc:
-                            tool_calls_acc[idx] = {"id": getattr(tc_delta, "id", "") or "", "name": "", "arguments": ""}
+                            tool_calls_acc[idx] = {
+                                "id": getattr(tc_delta, "id", "") or "",
+                                "name": "",
+                                "arguments": "",
+                            }
                         acc = tool_calls_acc[idx]
                         if getattr(tc_delta, "id", None):
                             acc["id"] = tc_delta.id
