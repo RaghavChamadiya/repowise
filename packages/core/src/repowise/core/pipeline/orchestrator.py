@@ -27,6 +27,10 @@ from repowise.core.pipeline.progress import ProgressCallback
 
 logger = structlog.get_logger(__name__)
 
+# Maximum seconds to spend on decision extraction before giving up.
+# Large repos with tens of thousands of files can take arbitrarily long.
+DECISION_EXTRACTION_TIMEOUT_SECS = 300
+
 
 # ---------------------------------------------------------------------------
 # Result dataclass
@@ -484,7 +488,7 @@ async def _run_decision_extraction(
             git_meta_map=git_meta_map,
             parsed_files=parsed_files,
         )
-        report = await asyncio.wait_for(extractor.extract_all(), timeout=300)
+        report = await asyncio.wait_for(extractor.extract_all(), timeout=DECISION_EXTRACTION_TIMEOUT_SECS)
 
         if progress:
             inline = report.by_source.get("inline_marker", 0)

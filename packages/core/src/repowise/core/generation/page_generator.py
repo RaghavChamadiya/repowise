@@ -464,13 +464,12 @@ class PageGenerator:
                         "Resuming generation from vector store",
                         already_completed=len(completed_ids),
                     )
-            if job_id is None:
-                job_id = job_system.create_job(
-                    repo_path_str,
-                    self._config,
-                    self._provider.provider_name,
-                    self._provider.model_name,
-                )
+            job_id = job_system.create_job(
+                repo_path_str,
+                self._config,
+                self._provider.provider_name,
+                self._provider.model_name,
+            )
 
         async def run_level(named_coros: list[tuple[str, Any]], level: int) -> list[GeneratedPage]:
             if job_system is not None and job_id is not None:

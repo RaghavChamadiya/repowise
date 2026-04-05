@@ -21,6 +21,7 @@ graph_edges).  Phase 4 will replace this with the full SQLAlchemy schema.
 from __future__ import annotations
 
 import json
+import shlex
 from pathlib import Path
 from typing import Any
 
@@ -293,8 +294,6 @@ class GraphBuilder:
 
     def _extract_include_dirs(self, source_file: str) -> list[str]:
         """Return absolute include directories for source_file from compile_commands.json."""
-        import shlex
-
         commands = self._load_compile_commands()
         if not commands or source_file not in commands:
             return []
