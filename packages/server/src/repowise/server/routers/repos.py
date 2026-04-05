@@ -3,12 +3,16 @@
 from __future__ import annotations
 
 import asyncio
+import io
 import logging
+import zipfile
+from pathlib import PurePosixPath
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi.responses import StreamingResponse
 from repowise.core.persistence import crud
 from repowise.core.persistence.models import (
     DeadCodeFinding,
@@ -240,3 +244,42 @@ def _launch_job_task(request: Request, job_id: str) -> None:
             logger.error("background_job_failed", exc_info=t.exception())
 
     task.add_done_callback(_on_done)
+
+
+@router.get("/{repo_id}/export")
+async def export_wiki(
+    repo_id: str,
+    session: AsyncSession = Depends(get_db_session),  # noqa: B008
+) -> StreamingResponse:
+    """Export all wiki pages as a ZIP of markdown files with folder structure."""
+    repo = await crud.get_repository(session, repo_id)
+    if repo is None:
+        raise HTTPException(status_code=404, detail="Repository not found")
+
+    pages = await crud.list_pages(session, repo_id, limit=10000)
+    if not pages:
+        raise HTTPException(status_code=404, detail="No pages to export")
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        for page in pages:
+            target = page.target_path or page.id
+            safe = (
+                target.replace("::", "/")
+                .replace("->", "--")
+                .replace("\\", "/")
+            )
+            path = PurePosixPath("wiki") / page.page_type / safe
+            if path.suffix != ".md":
+                path = path.with_suffix(path.suffix + ".md")
+
+            content = f"# {page.title}\n\n{page.content}"
+            zf.writestr(str(path), content)
+
+    buf.seek(0)
+    filename = f"{repo.name}-wiki.zip"
+    return StreamingResponse(
+        buf,
+        media_type="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )

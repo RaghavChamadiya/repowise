@@ -125,3 +125,33 @@ async def test_full_resync_duplicate_returns_409(client: AsyncClient) -> None:
 
         resp2 = await client.post(f"/api/repos/{repo['id']}/full-resync")
         assert resp2.status_code == 409
+
+
+
+@pytest.mark.asyncio
+async def test_export_wiki_not_found(client: AsyncClient) -> None:
+    resp = await client.get("/api/repos/nonexistent/export")
+    assert resp.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_export_wiki_returns_zip(client: AsyncClient, session) -> None:
+    import zipfile
+    from io import BytesIO
+
+    from repowise.core.persistence.crud import upsert_page, upsert_repository
+    from tests.unit.persistence.helpers import make_page_kwargs
+
+    repo = await upsert_repository(session, name="export-test", local_path="/tmp/export-test")
+    await upsert_page(session, **make_page_kwargs(repo.id))
+    await session.commit()
+
+    resp = await client.get(f"/api/repos/{repo.id}/export")
+    assert resp.status_code == 200
+    assert resp.headers["content-type"] == "application/zip"
+
+    zf = zipfile.ZipFile(BytesIO(resp.content))
+    names = zf.namelist()
+    assert len(names) == 1
+    assert names[0].startswith("wiki/")
+    assert names[0].endswith(".md")
