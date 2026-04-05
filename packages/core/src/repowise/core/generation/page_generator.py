@@ -456,19 +456,13 @@ class PageGenerator:
         _is_resumed_job: bool = False
         if job_system is not None:
             repo_path_str = str(Path(repo_path).resolve()) if repo_path else str(getattr(repo_structure, "root_path", "."))
-            # On resume, find the most recent incomplete job for this repo
-            if resume:
-                existing = [
-                    cp for cp in job_system.list_jobs()
-                    if cp.repo_path == repo_path_str and cp.status in ("running", "paused", "pending")
-                ]
-                if existing:
-                    job_id = existing[0].job_id
-                    completed_ids = job_system.get_completed_page_ids(job_id)
+            # On resume, query the vector store directly — it is the ground truth
+            if resume and self._vector_store is not None:
+                completed_ids = await self._vector_store.list_page_ids()
+                if completed_ids:
                     _is_resumed_job = True
                     log.info(
-                        "Resuming generation job",
-                        job_id=job_id,
+                        "Resuming generation from vector store",
                         already_completed=len(completed_ids),
                     )
             if job_id is None:
