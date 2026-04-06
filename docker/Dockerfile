@@ -2,7 +2,7 @@
 # repowise — multi-stage Docker build (backend + frontend)
 # =============================================================================
 # Usage:
-#   docker build -t repowise .
+#   docker build -t repowise -f docker/Dockerfile .
 #   docker run -p 7337:7337 -p 3000:3000 -v /path/to/repo/.repowise:/data -e GEMINI_API_KEY=... repowise
 # =============================================================================
 
@@ -48,13 +48,13 @@ RUN pip install --no-cache-dir ".[all]"
 # Copy built Next.js standalone output
 COPY --from=frontend-builder /app/.next/standalone /app/web
 COPY --from=frontend-builder /app/.next/static /app/web/.next/static
-COPY --from=frontend-builder /app/public /app/web/public 2>/dev/null || true
+COPY --from=frontend-builder /app/public /app/web/public
 
 # Data volume for .repowise directory
 VOLUME /data
 
 # Environment defaults
-ENV REPOWISE_DB_URL=sqlite+aiosqlite:///data/wiki.db
+ENV REPOWISE_DB_URL=sqlite+aiosqlite:////data/wiki.db
 ENV REPOWISE_EMBEDDER=mock
 ENV PORT_BACKEND=7337
 ENV PORT_FRONTEND=3000
