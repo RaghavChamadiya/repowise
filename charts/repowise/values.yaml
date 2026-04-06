@@ -1,4 +1,4 @@
-# -- Number of replicas (only 1 supported with SQLite)
+# -- Number of replicas (only 1 supported with SQLite; PostgreSQL allows more)
 replicaCount: 1
 
 image:
@@ -103,10 +103,10 @@ persistence:
   # -- Annotations for the PVC
   annotations: {}
 
-# -- PostgreSQL database (replaces SQLite, eliminates "database is locked" errors)
+# -- PostgreSQL database (default). Set enabled=false to use SQLite instead.
 postgresql:
-  # -- Enable PostgreSQL instead of SQLite
-  enabled: false
+  # -- Enable PostgreSQL (recommended). Disable for SQLite (single-user/dev only).
+  enabled: true
   auth:
     # -- PostgreSQL username
     username: repowise
