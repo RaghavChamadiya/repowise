@@ -68,16 +68,28 @@ service:
   # -- Frontend Web UI port
   frontendPort: 3000
 
-httpProxy:
-  # -- Enable Contour HTTPProxy
+ingress:
+  # -- Enable Ingress
   enabled: false
-  # -- FQDN for the virtual host
-  fqdn: repowise.local
-  tls:
-    # -- Enable TLS
-    enabled: false
-    # -- Name of the TLS secret (e.g. wildcard cert)
-    secretName: ""
+  # -- Ingress class name
+  className: ""
+  # -- Ingress annotations
+  annotations: {}
+    # kubernetes.io/ingress.class: nginx
+    # cert-manager.io/cluster-issuer: letsencrypt-prod
+  # -- Ingress hosts
+  hosts:
+    - host: repowise.local
+      paths:
+        - path: /
+          pathType: Prefix
+          # -- Which port to route to: "frontend" or "backend"
+          servicePort: frontend
+  # -- TLS configuration
+  tls: []
+  #  - secretName: repowise-tls
+  #    hosts:
+  #      - repowise.local
 
 persistence:
   # -- Enable persistent storage for /data (SQLite DB + indexed repos)

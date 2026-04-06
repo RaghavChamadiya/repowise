@@ -1,8 +1,10 @@
 Repowise has been deployed!
 
 1. Get the application URLs:
-{{- if .Values.httpProxy.enabled }}
-  https://{{ .Values.httpProxy.fqdn }}
+{{- if .Values.ingress.enabled }}
+{{- range $host := .Values.ingress.hosts }}
+  http{{ if $.Values.ingress.tls }}s{{ end }}://{{ $host.host }}
+{{- end }}
 {{- else if contains "NodePort" .Values.service.type }}
   export NODE_PORT_FRONTEND=$(kubectl get --namespace {{ .Release.Namespace }} -o jsonpath="{.spec.ports[1].nodePort}" services {{ include "repowise.fullname" . }})
   export NODE_IP=$(kubectl get nodes --namespace {{ .Release.Namespace }} -o jsonpath="{.items[0].status.addresses[0].address}")
