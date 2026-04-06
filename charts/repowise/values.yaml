@@ -141,16 +141,11 @@ tolerations: []
 affinity: {}
 
 # -- Liveness probe configuration
-# Note: indexing large repos is CPU-intensive and can starve the health
-# endpoint, so keep timeouts and failure thresholds generous.
-livenessProbe:
-  httpGet:
-    path: /health
-    port: backend
-  initialDelaySeconds: 30
-  periodSeconds: 60
-  timeoutSeconds: 15
-  failureThreshold: 10
+# Disabled by default: indexing large repos is CPU-intensive and can starve
+# the health endpoint, causing unnecessary restarts. Use readiness probe
+# instead (it only removes from service, doesn't restart).
+# Uncomment below to enable if you don't use heavy indexing.
+livenessProbe: {}
 
 # -- Readiness probe configuration
 readinessProbe:
