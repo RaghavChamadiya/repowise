@@ -1,41 +1,36 @@
-{{- if .Values.ingress.enabled -}}
-apiVersion: networking.k8s.io/v1
-kind: Ingress
+{{- if .Values.httpProxy.enabled -}}
+apiVersion: projectcontour.io/v1
+kind: HTTPProxy
 metadata:
   name: {{ include "repowise.fullname" . }}
   labels:
     {{- include "repowise.labels" . | nindent 4 }}
-  {{- with .Values.ingress.annotations }}
-  annotations:
-    {{- toYaml . | nindent 4 }}
-  {{- end }}
 spec:
-  {{- if .Values.ingress.className }}
-  ingressClassName: {{ .Values.ingress.className }}
-  {{- end }}
-  {{- if .Values.ingress.tls }}
-  tls:
-    {{- range .Values.ingress.tls }}
-    - hosts:
-        {{- range .hosts }}
-        - {{ . | quote }}
-        {{- end }}
-      secretName: {{ .secretName }}
+  virtualhost:
+    fqdn: {{ .Values.httpProxy.fqdn }}
+    {{- if .Values.httpProxy.tls.enabled }}
+    tls:
+      secretName: {{ .Values.httpProxy.tls.secretName }}
     {{- end }}
-  {{- end }}
-  rules:
-    {{- range .Values.ingress.hosts }}
-    - host: {{ .host | quote }}
-      http:
-        paths:
-          {{- range .paths }}
-          - path: {{ .path }}
-            pathType: {{ .pathType }}
-            backend:
-              service:
-                name: {{ include "repowise.fullname" $ }}
-                port:
-                  name: {{ .servicePort | default "frontend" }}
-          {{- end }}
-    {{- end }}
+  routes:
+    - conditions:
+        - prefix: /api/
+      services:
+        - name: {{ include "repowise.fullname" . }}
+          port: {{ .Values.service.backendPort }}
+    - conditions:
+        - prefix: /health
+      services:
+        - name: {{ include "repowise.fullname" . }}
+          port: {{ .Values.service.backendPort }}
+    - conditions:
+        - prefix: /metrics
+      services:
+        - name: {{ include "repowise.fullname" . }}
+          port: {{ .Values.service.backendPort }}
+    - conditions:
+        - prefix: /
+      services:
+        - name: {{ include "repowise.fullname" . }}
+          port: {{ .Values.service.frontendPort }}
 {{- end }}
