@@ -160,17 +160,6 @@ spec:
               if [ -n "$REPO_ID" ] && [ -z "$HEAD" ]; then
                 echo "  not yet indexed, triggering sync..."
                 curl -sf -X POST "$API/api/repos/$REPO_ID/sync" > /dev/null 2>&1 && echo "  sync triggered" || echo "  (sync already running)"
-                # Wait for this sync to finish before next repo (SQLite can't handle concurrent writes)
-                echo "  waiting for sync to complete..."
-                while true; do
-                  sleep 10
-                  JOBS=$(curl -sf "$API/api/jobs?repo_id=$REPO_ID&status=running" 2>/dev/null || echo "[]")
-                  PENDING=$(curl -sf "$API/api/jobs?repo_id=$REPO_ID&status=pending" 2>/dev/null || echo "[]")
-                  if [ "$JOBS" = "[]" ] && [ "$PENDING" = "[]" ]; then
-                    echo "  sync done."
-                    break
-                  fi
-                done
               elif [ -n "$HEAD" ]; then
                 echo "  already indexed (head: $HEAD), skipping sync."
               fi
