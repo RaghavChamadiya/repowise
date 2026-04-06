@@ -11,7 +11,7 @@ Four intelligence layers. Eight MCP tools. One `pip install`.
 [![MCP](https://img.shields.io/badge/MCP-compatible-F59520?labelColor=0A0A0A)](https://modelcontextprotocol.io)
 [![Stars](https://img.shields.io/github/stars/repowise-dev/repowise?color=F59520&labelColor=0A0A0A)](https://github.com/repowise-dev/repowise)
 
-[**Live Demo →**](https://repowise.dev/examples) · [**Hosted for teams**](https://repowise.dev) · [**Docs**](https://repowise-dev.github.io) · [**Discord**](https://discord.gg/repowise)
+[**Live Demo →**](https://repowise.dev/examples) · [**Hosted for teams**](https://www.repowise.dev/#contact) · [**Docs**](https://repowise-dev.github.io) · [**Discord**](https://discord.gg/cQVpuDB6rh) · [**Contact**](mailto:hello@repowise.dev)
 
 ---
 
@@ -80,8 +80,6 @@ Add to your Claude Code config (`~/.claude/claude_desktop_config.json`):
 }
 ```
 
-**Via Claude plugin store:** Install the repowise plugin, then tell Claude: *"Set up repowise for this project."* Claude handles `pip install`, `repowise init`, and MCP configuration automatically.
-
 > **Note on init time:** Initial indexing analyzes your entire codebase — AST parsing, 500-commit git history, LLM doc generation, embedding indexing, and decision archaeology. This is a one-time cost (~25 minutes for a 3,000-file project). Every subsequent update after a commit takes under 30 seconds.
 
 ---
@@ -108,7 +106,6 @@ Most tools are designed around data entities — one module, one file, one symbo
 | Approach | Tool calls | Time to first change | What it misses |
 |---|---|---|---|
 | Claude Code alone (no MCP) | grep + read ~30 files | ~8 min | Ownership, prior decisions, hidden coupling |
-| repowise (old 16-tool design) | 16 sequential calls | ~15 min | Nothing — but slow |
 | **repowise (8 tools)** | **5 calls** | **~2 min** | **Nothing** |
 
 The 5 calls for that task:
@@ -303,7 +300,7 @@ repowise is the intersection: CodeScene-level git intelligence + auto-generated 
 
 ## Hosted version — for teams
 
-The self-hosted OSS version is complete and production-ready. A hosted version for engineering teams is in active development.
+For teams that want repowise managed, we offer a hosted version. No self-hosting, no infrastructure to maintain — we handle deployment, updates, and webhooks. If your team wants shared codebase intelligence without the operational overhead, reach out.
 
 Hosted adds what only makes sense in a managed, multi-user environment:
 
@@ -311,10 +308,10 @@ Hosted adds what only makes sense in a managed, multi-user environment:
 - **Session intelligence harvesting** — architectural decisions extracted from AI coding sessions and proposed to the team knowledge base automatically
 - **Engineering leader dashboard** — bus factor trends, hotspot evolution over time, cross-repo dead code, ownership drift
 - **Managed webhooks** — zero-configuration auto re-index on every commit to any branch
-- **Integrations** *(coming)* — Slack alerts, Notion sync, Confluence sync, Jira and Linear decision linking
+- **Integrations** — Slack alerts, Notion sync, Confluence sync, Jira and Linear decision linking
 - **Cross-repo intelligence** — hotspots, dead code, and ownership across all your repositories at once
 
-[Join the hosted waitlist →](https://repowise.dev) · [Contact us for enterprise](mailto:hello@repowise.dev)
+[Get in touch →](https://www.repowise.dev/#contact) · [hello@repowise.dev](mailto:hello@repowise.dev)
 
 ---
 
@@ -405,13 +402,11 @@ Full configuration reference: [docs/CONFIG.md](docs/CONFIG.md)
 ## Contributing
 
 ```bash
-git clone https://github.com/repowise/repowise
+git clone https://github.com/repowise-dev/repowise
 cd repowise
 pip install -e "packages/core[dev]"
 pytest tests/unit/
 ```
-
-Good first issues: [`good first issue`](https://github.com/repowise/repowise/labels/good%20first%20issue)
 
 Full guide including how to add languages and LLM providers: [CONTRIBUTING.md](CONTRIBUTING.md)
 
@@ -421,7 +416,7 @@ Full guide including how to add languages and LLM providers: [CONTRIBUTING.md](C
 
 AGPL-3.0. Free for individuals, teams, and companies using repowise internally.
 
-For commercial licensing — embedding repowise in a product, white-labeling, or SaaS use without AGPL obligations — contact [commercial@repowise.dev](mailto:commercial@repowise.dev).
+For commercial licensing — embedding repowise in a product, white-labeling, or SaaS use without AGPL obligations — contact [hello@repowise.dev](mailto:hello@repowise.dev).
 
 ---
 
@@ -429,6 +424,6 @@ For commercial licensing — embedding repowise in a product, white-labeling, or
 
 Built for engineers who got tired of asking *"why does this code exist?"*
 
-[repowise.dev](https://repowise.dev) · [Live Demo →](https://repowise.dev/examples) · [Discord](https://discord.gg/repowise) · [X](https://x.com/repowisedev)
+[repowise.dev](https://repowise.dev) · [Live Demo →](https://repowise.dev/examples) · [Discord](https://discord.gg/cQVpuDB6rh) · [X](https://x.com/repowisedev) · [hello@repowise.dev](mailto:hello@repowise.dev)
 
 </div>
