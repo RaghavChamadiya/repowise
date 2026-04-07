@@ -29,48 +29,6 @@ The result: Claude Code answers *"why does auth work this way?"* instead of *"he
 
 ---
 
-## What's new
-
-### Faster indexing
-Indexing is now fully parallel. A `ProcessPoolExecutor` distributes AST parsing across all CPU cores. Graph construction and git history indexing run concurrently via `asyncio.gather`. Per-file git history is fetched through a thread executor with a semaphore to cap concurrency — full parallelism without overwhelming the system. Large repos index noticeably faster.
-
-### RAG-aware documentation generation
-Every wiki page is generated with richer context: before calling the LLM, repowise fetches the already-generated summaries of each file's direct dependencies from the vector store and injects them into the prompt. Generation is topologically sorted so leaf files are always written first. The LLM sees what its dependencies actually do, not just their names — producing more accurate, cross-referenced documentation.
-
-### Atomic three-store transactions
-`AtomicStorageCoordinator` buffers writes across the SQL database, the in-memory dependency graph, and the vector store, then flushes them in a single coordinated operation. If any store fails, all three are rolled back — no partial writes, no silent drift. Run `repowise doctor` to inspect drift across all three stores and repair mismatches.
-
-### Dynamic import hints
-The dependency graph now captures edges that pure AST parsing misses:
-- Django `INSTALLED_APPS`, `ROOT_URLCONF`, and `MIDDLEWARE` settings
-- pytest fixture wiring through `conftest.py`
-- Node/TypeScript path aliases from `tsconfig.json` `paths` and `package.json` `exports`
-
-These edges appear in `get_context`, `get_risk`, and `get_dependency_path` like any other dependency.
-
-### Temporal hotspot decay
-Hotspot scoring now uses an exponentially time-decayed score with a 180-day half-life layered on top of the raw 90-day churn count. A commit from a year ago contributes roughly 25% as much as a commit from today. The score reflects recent activity, not just total volume. Surfaced in `get_overview` and `get_risk`.
-
-### Percentile ranks via SQL window function
-Incremental updates now recompute global percentile ranks for every file using a single `PERCENT_RANK()` SQL window function. Previously this required loading all rows into Python. The new approach is both faster and correct on large repos — no sampling, no approximation.
-
-### PR blast radius
-`get_risk(changed_files=[...])` now returns a full blast-radius report: transitive affected files, co-change warnings for historical co-change partners not included in the PR, recommended reviewers ranked by temporal ownership, test gap detection, and an overall 0–10 risk score. Same eight tools — substantially more signal per call.
-
-### Knowledge map in `get_overview`
-`get_overview` now surfaces: top owners across the codebase, "bus factor 1" knowledge silos (files where one person owns >80% of commits), and onboarding targets — high-centrality files with the weakest documentation coverage. Useful for team planning and risk review.
-
-### Test gaps and security signals in `get_risk`
-`get_risk` now includes a `test_gap` flag per file (no test file co-changes detected) and `security_signals` — static pattern detection for common risk categories: authentication bypass patterns, `eval`-family calls, raw SQL string construction, and weak cryptography. Signals appear alongside the existing hotspot and ownership data.
-
-### LLM cost tracking
-Every LLM call is logged to a new `llm_costs` table with operation type, model, token counts, and estimated cost. A new `repowise costs` CLI command lets you group spending by operation, model, or day. The indexing progress bar now shows a live `Cost: $X.XXX` counter next to the spinner.
-
-### Configurable dead-code sensitivity
-The `repowise dead-code` command and the `get_dead_code` MCP tool now expose sensitivity controls: `--min-confidence` (default 0.70), `--include-internals` (include private/underscore-prefixed symbols), and `--include-zombie-packages` (packages present in `package.json` / `pyproject.toml` but unused in the graph). Tune the output to your cleanup goals.
-
----
-
 ## What repowise builds
 
 repowise runs once, builds everything, then keeps it in sync on every commit.
@@ -214,9 +172,13 @@ This is what happens when an AI agent has real codebase intelligence.
 | **Symbols** | Searchable index of every function, class, and method |
 | **Coverage** | Doc freshness per file with one-click regeneration |
 | **Ownership** | Contributor attribution and bus factor risk |
-| **Hotspots** | Ranked high-churn files with commit history |
+| **Hotspots** | Ranked by trend-weighted score (180-day decay) and churn |
 | **Dead Code** | Unused code with confidence scores and bulk actions |
 | **Decisions** | Architectural decisions with staleness monitoring |
+| **Costs** | LLM spend by day, model, or operation, with running session totals |
+| **Blast Radius** | Paste a PR file list, see transitive impact, reviewers, and test gaps |
+| **Knowledge Map** | Top owners, bus-factor silos, and onboarding targets on the dashboard |
+| **System Health** | SQL/vector/graph drift status from the atomic store coordinator |
 
 ---
 
