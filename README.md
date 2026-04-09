@@ -29,6 +29,23 @@ The result: Claude Code answers *"why does auth work this way?"* instead of *"he
 
 ---
 
+## 🏆 Benchmarked against frontier LLMs
+
+> **[repowise-bench →](https://github.com/repowise-dev/repowise-bench)** — an open SWE-QA benchmark that grades how well standard LLMs answer real software-engineering questions over real repositories.
+>
+> On 48 paired tasks from `pallets/flask` (`claude-sonnet-4-6`, end-to-end), repowise-augmented Claude Code matches baseline answer quality while being dramatically leaner:
+>
+> | Metric (per task, mean) | Baseline | **+ repowise** | Δ |
+> |---|---|---|---|
+> | 💰 Cost | $0.1396 | **$0.0890** | **−36 %** |
+> | ⚡ Wall time | 41.7 s | **33.9 s** | **−19 %** |
+> | 🛠️ Tool calls | 7.4 | **3.8** | **−49 %** |
+> | 📄 Files read | 1.9 | **0.2** | **−89 %** |
+>
+> **32 / 48 (67 %)** tasks are cheaper with repowise — at parity quality (judge Δ ≈ −0.01).
+
+---
+
 ## What's new
 
 ### Faster indexing
