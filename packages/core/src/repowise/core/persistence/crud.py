@@ -209,6 +209,7 @@ async def upsert_page(
     page_type: str,
     title: str,
     content: str,
+    summary: str = "",
     target_path: str,
     source_hash: str,
     model_name: str,
@@ -261,6 +262,7 @@ async def upsert_page(
         existing.page_type = page_type
         existing.title = title
         existing.content = content
+        existing.summary = summary
         existing.target_path = target_path
         existing.source_hash = source_hash
         existing.model_name = model_name
@@ -284,6 +286,7 @@ async def upsert_page(
             page_type=page_type,
             title=title,
             content=content,
+            summary=summary,
             target_path=target_path,
             source_hash=source_hash,
             model_name=model_name,
@@ -323,6 +326,7 @@ async def upsert_page_from_generated(
         page_type=gp.page_type,  # type: ignore[attr-defined]
         title=gp.title,  # type: ignore[attr-defined]
         content=gp.content,  # type: ignore[attr-defined]
+        summary=getattr(gp, "summary", "") or "",
         target_path=gp.target_path,  # type: ignore[attr-defined]
         source_hash=gp.source_hash,  # type: ignore[attr-defined]
         model_name=gp.model_name,  # type: ignore[attr-defined]

@@ -3,7 +3,7 @@
 <img src=".github/assets/logo.png" width="280" alt="repowise" /><br />
 **Codebase intelligence for AI-assisted engineering teams.**
 
-Four intelligence layers. Eight MCP tools. One `pip install`.
+Four intelligence layers. Ten MCP tools. One `pip install`.
 
 [![PyPI version](https://img.shields.io/pypi/v/repowise?color=F59520&labelColor=0A0A0A)](https://pypi.org/project/repowise/)
 [![License: AGPL v3](https://img.shields.io/badge/license-AGPL--v3-F59520?labelColor=0A0A0A)](https://www.gnu.org/licenses/agpl-3.0)
@@ -23,7 +23,7 @@ Four intelligence layers. Eight MCP tools. One `pip install`.
 
 When Claude Code reads a 3,000-file codebase, it reads files. It does not know who owns them, which ones change together, which ones are dead, or why they were built the way they were.
 
-repowise fixes that. It indexes your codebase into four intelligence layers — dependency graph, git history, auto-generated documentation, and architectural decisions — and exposes them to Claude Code (and any MCP-compatible AI agent) through eight precisely designed tools.
+repowise fixes that. It indexes your codebase into four intelligence layers — dependency graph, git history, auto-generated documentation, and architectural decisions — and exposes them to Claude Code (and any MCP-compatible AI agent) through ten precisely designed tools.
 
 The result: Claude Code answers *"why does auth work this way?"* instead of *"here is what auth.ts contains."*
 
@@ -48,6 +48,15 @@ The dependency graph now captures edges that pure AST parsing misses:
 
 These edges appear in `get_context`, `get_risk`, and `get_dependency_path` like any other dependency.
 
+### Single-call answers via `get_answer`
+A new `get_answer(question)` MCP tool collapses the typical "search → read → reason" loop into one call. It runs retrieval over the wiki, gates on confidence (top-hit dominance ratio), and synthesizes a 2–5 sentence answer with concrete file/symbol citations. High-confidence answers can be cited directly; ambiguous ones return ranked excerpts so the agent grounds in source. Responses are cached per repository by question hash, so repeated questions cost nothing.
+
+### Symbol lookup via `get_symbol`
+A new `get_symbol(symbol_id)` MCP tool resolves a fully-qualified symbol identifier (e.g. `pkg/module.py::Class::method`) to its definition, returning the source body, signature, file location, and any cross-referenced docstring — without the agent having to grep then read.
+
+### Test files in the documentation layer
+The page generator now treats test files as first-class wiki targets. They have near-zero PageRank (nothing imports them back) but answer real questions like "what test exercises X" or "where is Y verified", which the doc layer is the right place to surface. Filtering remains available via `skip_tests` for users who prefer to exclude them.
+
 ### Temporal hotspot decay
 Hotspot scoring now uses an exponentially time-decayed score with a 180-day half-life layered on top of the raw 90-day churn count. A commit from a year ago contributes roughly 25% as much as a commit from today. The score reflects recent activity, not just total volume. Surfaced in `get_overview` and `get_risk`.
 
@@ -55,7 +64,7 @@ Hotspot scoring now uses an exponentially time-decayed score with a 180-day half
 Incremental updates now recompute global percentile ranks for every file using a single `PERCENT_RANK()` SQL window function. Previously this required loading all rows into Python. The new approach is both faster and correct on large repos — no sampling, no approximation.
 
 ### PR blast radius
-`get_risk(changed_files=[...])` now returns a full blast-radius report: transitive affected files, co-change warnings for historical co-change partners not included in the PR, recommended reviewers ranked by temporal ownership, test gap detection, and an overall 0–10 risk score. Same eight tools — substantially more signal per call.
+`get_risk(changed_files=[...])` now returns a full blast-radius report: transitive affected files, co-change warnings for historical co-change partners not included in the PR, recommended reviewers ranked by temporal ownership, test gap detection, and an overall 0–10 risk score. Same flat tool surface — substantially more signal per call.
 
 ### Knowledge map in `get_overview`
 `get_overview` now surfaces: top owners across the codebase, "bus factor 1" knowledge silos (files where one person owns >80% of commits), and onboarding targets — high-centrality files with the weakest documentation coverage. Useful for team planning and risk review.
@@ -128,17 +137,19 @@ Add to your Claude Code config (`~/.claude/claude_desktop_config.json`):
 
 ---
 
-## Eight MCP tools
+## Ten MCP tools
 
 Most tools are designed around data entities — one module, one file, one symbol — which forces AI agents into long chains of sequential calls. repowise tools are designed around **tasks**. Pass multiple targets in one call. Get complete context back.
 
 | Tool | What it answers | When Claude Code calls it |
 |---|---|---|
+| `get_answer(question)` | One-call RAG: retrieves over the wiki, gates on confidence, and synthesizes a cited 2–5 sentence answer. High-confidence answers cite directly; ambiguous queries return ranked excerpts. Responses are cached per repository by question hash. | First call on any code question — collapses search → read → reason into one round-trip |
+| `get_symbol(symbol_id)` | Resolves a qualified symbol id (`path::Class::method`) to its source body, signature, and docstring | When the question names a specific class, function, or method |
 | `get_overview()` | Architecture summary, module map, entry points | First call on any unfamiliar codebase |
-| `get_context(targets, include?)` | Docs, ownership, decisions, freshness for any targets — files, modules, or symbols | Before reading or modifying code. Pass all relevant targets in one call. |
+| `get_context(targets, include?, compact?)` | Docs, ownership, decisions, freshness for any targets — files, modules, or symbols. `compact=True` is the default and bounds the response to ~10K characters; pass `compact=False` for the full structure block, importer list, and per-symbol docstrings | Before reading or modifying code. Pass all relevant targets in one call. |
 | `get_risk(targets?, changed_files?)` | Hotspot scores, dependents, co-change partners, blast radius, recommended reviewers, test gaps, security signals, 0–10 risk score | Before modifying files — understand what could break |
 | `get_why(query?)` | Three modes: NL search over decisions · path-based decisions for a file · no-arg health dashboard | Before architectural changes — understand existing intent |
-| `search_codebase(query)` | Semantic search over the full wiki. Natural language. | When you don't know where something lives |
+| `search_codebase(query)` | Semantic search over the full wiki. Natural language. | When `get_answer` returned low confidence and you need to discover candidate pages by topic |
 | `get_dependency_path(from, to)` | Connection path between two files, modules, or symbols | When tracing how two things are connected |
 | `get_dead_code(min_confidence?, include_internals?, include_zombie_packages?)` | Unreachable code sorted by confidence and cleanup impact | Cleanup tasks |
 | `get_architecture_diagram(module?)` | Mermaid diagram for the repo or a specific module | Documentation and presentation |
@@ -151,7 +162,7 @@ Most tools are designed around data entities — one module, one file, one symbo
 |---|---|---|---|
 | Claude Code alone (no MCP) | grep + read ~30 files | ~8 min | Ownership, prior decisions, hidden coupling |
 | repowise (old 16-tool design) | 16 sequential calls | ~15 min | Nothing — but slow |
-| **repowise (8 tools)** | **5 calls** | **~2 min** | **Nothing** |
+| **repowise (10 tools)** | **5 calls** | **~2 min** | **Nothing** |
 
 The 5 calls for that task:
 
@@ -325,7 +336,7 @@ When a senior engineer leaves, the "why" usually leaves with them. Decision inte
 | Git intelligence (hotspots, ownership, co-changes) | ✅ | ❌ | ❌ | ❌ | ✅ |
 | Bus factor analysis | ✅ | ❌ | ❌ | ❌ | ✅ |
 | Architectural decision records | ✅ | ❌ | ❌ | ❌ | ❌ |
-| MCP server for AI agents | ✅ 8 tools | ❌ | ✅ 3 tools | ✅ | ✅ |
+| MCP server for AI agents | ✅ 10 tools | ❌ | ✅ 3 tools | ✅ | ✅ |
 | Auto-generated CLAUDE.md | ✅ | ❌ | ❌ | ❌ | ❌ |
 | Doc freshness scoring | ✅ | ❌ | ❌ | ⚠️ staleness only | ❌ |
 | Incremental updates on commit | ✅ <30s | ✅ | ❌ | ✅ | ✅ |

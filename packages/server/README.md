@@ -11,7 +11,7 @@ FastAPI REST API, webhook handlers, MCP server, and background job scheduler for
 | Component | Description |
 |-----------|-------------|
 | **REST API** | FastAPI application with full CRUD for repos, pages, symbols, jobs, git analytics, dead code |
-| **MCP Server** | 8 MCP tools for AI coding assistants (Claude Code, Cursor, Cline) |
+| **MCP Server** | 10 MCP tools for AI coding assistants (Claude Code, Cursor, Cline) |
 | **Webhooks** | GitHub and GitLab push event handlers — trigger incremental updates automatically |
 | **Scheduler** | APScheduler background jobs — polling fallback, stale page decay, periodic re-sync |
 
@@ -153,7 +153,7 @@ Job progress events (`JobProgressEvent`) carry: `event` type, `file` currently b
 
 ## MCP Server
 
-repowise exposes 8 MCP tools for AI coding assistants. Start the MCP server via:
+repowise exposes 10 MCP tools for AI coding assistants. Start the MCP server via:
 
 ```bash
 repowise mcp                          # stdio transport (Claude Code, Cursor, Cline)

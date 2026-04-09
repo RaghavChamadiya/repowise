@@ -186,6 +186,114 @@ class TestPythonImports:
 
 
 # ---------------------------------------------------------------------------
+# Stem disambiguation — protects against the historical PageRank inflation
+# bug where a test fixture named like the package (e.g. tests/.../flask.py)
+# was the only file with stem "flask" in the stem map (because the real
+# src/flask/__init__.py registered under stem "__init__"), so every internal
+# `from flask import X` resolved to the test fixture, giving it massive
+# in-degree and dominating PageRank.
+# ---------------------------------------------------------------------------
+
+
+class TestStemDisambiguation:
+    def test_init_py_registers_under_parent_dir(self) -> None:
+        """`from flask import X` resolves to src/flask/__init__.py, not a
+        test fixture named flask.py."""
+        b = GraphBuilder()
+        b.add_file(_parsed("src/flask/__init__.py"))
+        b.add_file(_parsed("tests/test_apps/cliapp/inner1/inner2/flask.py"))
+        b.add_file(_parsed("src/flask/app.py", imports=[_imp("flask")]))
+        b.build()
+        g = b.graph()
+        assert g.has_edge("src/flask/app.py", "src/flask/__init__.py")
+        assert not g.has_edge(
+            "src/flask/app.py", "tests/test_apps/cliapp/inner1/inner2/flask.py"
+        )
+
+    def test_test_fixture_loses_to_source_file(self) -> None:
+        """When two files share a stem and one is under tests/, the
+        non-test file wins regardless of insertion order."""
+        # Insert test file FIRST so dict iteration would have favored it
+        # under the old last-write-wins logic.
+        b = GraphBuilder()
+        b.add_file(_parsed("tests/fixtures/widget.py"))
+        b.add_file(_parsed("src/widget.py"))
+        b.add_file(_parsed("main.py", imports=[_imp("widget")]))
+        b.build()
+        g = b.graph()
+        assert g.has_edge("main.py", "src/widget.py")
+        assert not g.has_edge("main.py", "tests/fixtures/widget.py")
+
+    def test_resolution_is_deterministic_across_orderings(self) -> None:
+        """Two builders with files added in opposite orders must produce
+        the same edge — resolution cannot depend on dict iteration."""
+        files = ["src/widget.py", "tests/fixtures/widget.py", "examples/widget.py"]
+
+        def build_with_order(order: list[str]) -> str | None:
+            b = GraphBuilder()
+            for f in order:
+                b.add_file(_parsed(f))
+            b.add_file(_parsed("main.py", imports=[_imp("widget")]))
+            b.build()
+            edges = list(b.graph().out_edges("main.py"))
+            return edges[0][1] if edges else None
+
+        target_a = build_with_order(files)
+        target_b = build_with_order(list(reversed(files)))
+        assert target_a == target_b == "src/widget.py"
+
+    def test_parent_dir_match_beats_shorter_path(self) -> None:
+        """A nested file whose parent directory matches the stem beats a
+        shallower file whose parent doesn't — canonical package layout
+        is the strongest signal."""
+        b = GraphBuilder()
+        # Shallower path, parent dir doesn't match stem
+        b.add_file(_parsed("vendor/util.py"))
+        # Deeper path, but parent dir == stem (canonical layout)
+        b.add_file(_parsed("src/util/util.py"))
+        b.add_file(_parsed("main.py", imports=[_imp("util")]))
+        b.build()
+        assert b.graph().has_edge("main.py", "src/util/util.py")
+
+    def test_src_layout_direct_match(self) -> None:
+        """`from flask.app import X` finds src/flask/app.py via the new
+        src/ candidate, not via stem fallback."""
+        b = GraphBuilder()
+        b.add_file(_parsed("src/flask/app.py"))
+        # Decoy: another app.py with the same stem in a deep test tree.
+        b.add_file(_parsed("tests/test_apps/cliapp/app.py"))
+        b.add_file(_parsed("main.py", imports=[_imp("flask.app")]))
+        b.build()
+        assert b.graph().has_edge("main.py", "src/flask/app.py")
+
+    def test_repo_root_init_does_not_crash(self) -> None:
+        """A repo-root __init__.py has no parent directory name; it must
+        be skipped from the stem map without crashing the build."""
+        b = GraphBuilder()
+        b.add_file(_parsed("__init__.py"))
+        b.add_file(_parsed("main.py", imports=[_imp("anything")]))
+        b.build()  # must not raise
+        # No edge expected — stem "anything" is unresolvable
+        assert b.graph().number_of_edges() == 0
+
+    def test_go_stem_collision_prefers_parent_match(self) -> None:
+        """Go: `import .../calculator` prefers calculator/calculator.go
+        over a test fixture with the same filename."""
+        b = GraphBuilder()
+        b.add_file(_parsed("internal/testdata/calculator.go", language="go"))
+        b.add_file(_parsed("calculator/calculator.go", language="go"))
+        b.add_file(
+            _parsed(
+                "main.go",
+                language="go",
+                imports=[_imp("github.com/example/app/calculator")],
+            )
+        )
+        b.build()
+        assert b.graph().has_edge("main.go", "calculator/calculator.go")
+
+
+# ---------------------------------------------------------------------------
 # TypeScript import resolution
 # ---------------------------------------------------------------------------
 

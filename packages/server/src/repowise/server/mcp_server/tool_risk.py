@@ -220,8 +220,15 @@ async def _assess_one_target(
 
     hotspot_score = meta.churn_percentile or 0.0
 
-    # Co-change partners
+    # Co-change partners — keep only the top-5 by frequency. Larger lists make
+    # MCP responses verbose without adding signal: top-5 captures the bulk of
+    # the temporal-coupling mass and keeps tool output tight for LLM agents.
     partners = json.loads(meta.co_change_partners_json)
+    partners_sorted = sorted(
+        partners,
+        key=lambda p: p.get("co_change_count", p.get("count", 0)) or 0,
+        reverse=True,
+    )[:5]
     import_related = import_links.get(target, set())
     co_changes = [
         {
@@ -230,7 +237,7 @@ async def _assess_one_target(
             "last_co_change": p.get("last_co_change"),
             "has_import_link": p.get("file_path", p.get("path", "")) in import_related,
         }
-        for p in partners
+        for p in partners_sorted
     ]
 
     owner = meta.primary_owner_name or "unknown"

@@ -315,12 +315,14 @@ This is how you connect repowise to Claude Code, Cursor, Cline, Windsurf, and ot
 | `--transport` | Protocol: `stdio` (default, for editors) or `sse` (for web clients) |
 | `--port` | Port for SSE transport (default: 7338) |
 
-**MCP tools exposed (8 tools):**
+**MCP tools exposed (10 tools):**
 
 | Tool | What it does |
 |------|-------------|
+| `get_answer` | One-call RAG: confidence-gated synthesis over the wiki, with cited 2–5 sentence answers and a per-repository question cache |
+| `get_symbol` | Resolve a qualified symbol id (`path::Class::method`) to its source body, signature, and docstring |
 | `get_overview` | Repository architecture summary, key modules, entry points, git health |
-| `get_context` | Complete context for files/modules/symbols — docs, ownership, decisions, freshness |
+| `get_context` | Complete context for files/modules/symbols — docs, ownership, decisions, freshness. Defaults to `compact=True`; pass `compact=False` for the full structure block and importer list. |
 | `get_risk` | Modification risk assessment — hotspot score, dependents, bus factor, trend |
 | `get_why` | Why code is structured the way it is — architectural decisions, git archaeology |
 | `search_codebase` | Semantic search over wiki with git freshness boosting |

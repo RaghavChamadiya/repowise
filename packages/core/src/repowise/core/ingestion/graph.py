@@ -34,6 +34,73 @@ log = structlog.get_logger(__name__)
 
 _LARGE_REPO_THRESHOLD = 30_000  # nodes — above this, algorithms are expensive
 
+# Path segments that mark a file as low-value for stem-based import resolution.
+# Files under these directories lose stem-collision tiebreaks against equivalents
+# in the canonical source tree (e.g. a `flask.py` test fixture will never beat
+# `src/flask/__init__.py` for the import-stem "flask"). The list is intentionally
+# language-agnostic — it captures the universal convention that fixture, example,
+# and script trees shadow rather than replace library code.
+_LOW_VALUE_PATH_SEGMENTS = frozenset(
+    {
+        "tests",
+        "test",
+        "_tests",
+        "__tests__",
+        "testing",
+        "test_apps",
+        "testdata",
+        "test_data",
+        "fixtures",
+        "examples",
+        "example",
+        "samples",
+        "sample",
+        "scripts",
+        "benchmarks",
+        "bench",
+        "docs",
+        "doc",
+    }
+)
+
+
+def _stem_priority(path: str, stem: str) -> tuple[int, int, int, str]:
+    """Sort key for choosing among files that share an import stem.
+
+    Lower tuples sort first; callers take ``candidates[0]`` as the resolution.
+    The ordering is deliberately language-agnostic so the same logic governs
+    Python, Go, C/C++, and the generic fallback in :meth:`_resolve_import`.
+
+    Fields, in priority order:
+
+    1. **Parent-directory match.** A file whose parent directory equals the
+       stem is almost always the canonical home for that name across every
+       package layout we care about — ``src/flask/__init__.py`` for stem
+       ``flask``, ``pkg/foo/foo.go`` for stem ``foo``, ``include/json/json.h``
+       for stem ``json``. Strongest single signal we have.
+    2. **Low-value path.** Files under fixture/example/script/doc trees lose
+       to equivalents in the source tree. This catches the failure mode
+       where a test fixture named identically to the package (e.g.
+       ``tests/.../<pkg>.py``) would otherwise win the stem-collision
+       tiebreak and inflate its PageRank by absorbing the entire library's
+       in-edges.
+    3. **Path depth.** Canonical package roots live shallow; deep nesting
+       usually means a vendored copy or a sub-fixture.
+    4. **Lexicographic path.** Deterministic tiebreak so resolution is
+       independent of dict iteration order — critical for reproducible
+       graphs across re-indexes and platforms.
+    """
+    path_obj = Path(path)
+    parts = path_obj.parts
+    if path_obj.name == "__init__.py":
+        # Registered under parent dir name — parent-matching by construction.
+        parent_match = 0
+    else:
+        parent_dir = parts[-2].lower() if len(parts) >= 2 else ""
+        parent_match = 0 if parent_dir == stem else 1
+    low_value = 1 if any(seg.lower() in _LOW_VALUE_PATH_SEGMENTS for seg in parts) else 0
+    return (parent_match, low_value, len(parts), path)
+
 
 class GraphBuilder:
     """Build a dependency graph from a collection of ParsedFile objects.
@@ -82,11 +149,7 @@ class GraphBuilder:
 
         # Build lookup tables for import resolution
         path_set = set(self._parsed_files.keys())
-        # stem_map: "calculator" → "python_pkg/calculator.py"
-        stem_map: dict[str, str] = {}
-        for p in path_set:
-            stem = Path(p).stem.lower()
-            stem_map[stem] = p
+        stem_map = self._build_stem_map(path_set)
 
         for path, parsed in self._parsed_files.items():
             for imp in parsed.imports:
@@ -335,12 +398,56 @@ class GraphBuilder:
             result.append(str(p.resolve()))
         return result
 
+    def _build_stem_map(self, path_set: set[str]) -> dict[str, list[str]]:
+        """Map import-stems to candidate file paths, sorted best-first.
+
+        For Python ``__init__.py`` files the stem is the *parent directory
+        name*, since ``import flask`` resolves to ``src/flask/__init__.py``
+        and not to a file with literal stem ``__init__``. For every other
+        file the stem is the filename without extension. The same map is
+        consulted by Python, Go, C/C++, and the generic fallback in
+        :meth:`_resolve_import` — keeping all collision logic in one place
+        is what makes the resolver deterministic across languages.
+
+        On stem collisions (test fixtures, vendored copies, deep examples)
+        candidates are sorted by :func:`_stem_priority` so callers can take
+        ``candidates[0]`` and get the canonical resolution. The fix that
+        prevents test-fixture-named-like-the-package PageRank inflation
+        lives here, not in any per-directory exclusion list.
+
+        Complexity: O(N) build, plus O(k log k) per bucket of size k. Total
+        worst case O(N log N) when one stem dominates; in practice O(N).
+        """
+        buckets: dict[str, list[str]] = {}
+        for p in path_set:
+            path_obj = Path(p)
+            if path_obj.name == "__init__.py":
+                parent = path_obj.parent.name
+                if not parent:
+                    # Repo-root __init__.py — no meaningful key. Skip rather
+                    # than register under the empty stem.
+                    continue
+                stem = parent.lower()
+            else:
+                stem = path_obj.stem.lower()
+            buckets.setdefault(stem, []).append(p)
+
+        for stem, paths in buckets.items():
+            paths.sort(key=lambda candidate: _stem_priority(candidate, stem))
+        return buckets
+
+    @staticmethod
+    def _stem_lookup(stem_map: dict[str, list[str]], stem: str) -> str | None:
+        """Return the highest-priority path for ``stem``, or None."""
+        candidates = stem_map.get(stem)
+        return candidates[0] if candidates else None
+
     def _resolve_import(
         self,
         module_path: str,
         importer_path: str,
         path_set: set[str],
-        stem_map: dict[str, str],
+        stem_map: dict[str, list[str]],
         language: str,
     ) -> str | None:
         """Best-effort resolve of an import to a known file path."""
@@ -367,17 +474,26 @@ class GraphBuilder:
                         return c
                 return None
             # Absolute import: "python_pkg.calculator" → "python_pkg/calculator.py"
+            # Try the obvious filesystem layouts in order. Modern Python
+            # packaging conventions place the package under "src/", so we
+            # check that prefix too — non-existent candidates are filtered
+            # by the path_set membership check, so adding more candidates
+            # is free of regressions.
             dotted = module_path.replace(".", "/")
             candidates = [
                 f"{dotted}.py",
                 f"{dotted}/__init__.py",
+                f"src/{dotted}.py",
+                f"src/{dotted}/__init__.py",
             ]
             for c in candidates:
                 if c in path_set:
                     return c
-            # Stem-only fallback
+            # Stem-only fallback — uses the deterministic priority from
+            # _build_stem_map so test fixtures named like the package
+            # cannot win against the canonical source file.
             stem = module_path.split(".")[-1].lower()
-            return stem_map.get(stem)
+            return self._stem_lookup(stem_map, stem)
 
         # --- TypeScript / JavaScript ---
         if language in ("typescript", "javascript"):
@@ -406,7 +522,7 @@ class GraphBuilder:
         if language == "go":
             # Last segment of the import path is the package name
             stem = module_path.rsplit("/", 1)[-1].lower()
-            return stem_map.get(stem)
+            return self._stem_lookup(stem_map, stem)
 
         # --- C / C++ ---
         if language in ("cpp", "c"):
@@ -431,11 +547,11 @@ class GraphBuilder:
                     pass
             # 3. Stem-matching fallback
             stem = Path(module_path).stem.lower()
-            return stem_map.get(stem)
+            return self._stem_lookup(stem_map, stem)
 
         # --- Generic fallback: stem matching ---
         stem = Path(module_path).stem.lower()
-        return stem_map.get(stem)
+        return self._stem_lookup(stem_map, stem)
 
     # ------------------------------------------------------------------
     # Co-change edges (Phase 5.5)

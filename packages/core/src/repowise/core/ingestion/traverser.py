@@ -64,6 +64,25 @@ _BLOCKED_DIRS: frozenset[str] = frozenset(
         ".cache",
         ".idea",
         ".vscode",
+        # NOTE: test/tests/spec/specs/__tests__ are intentionally NOT
+        # blocked here. They used to be excluded as a workaround for a
+        # PageRank-inflation bug in graph.py, where a test fixture named
+        # like the package (e.g. tests/.../<pkg>.py) would dominate the
+        # import stem map and collect spurious in-edges from the entire
+        # library. That bug is now fixed in graph.py via deterministic
+        # stem disambiguation (see _build_stem_map / _stem_priority), so
+        # test files can be indexed safely. Their content is needed to
+        # answer questions about test helpers and fixtures. Files under
+        # these directories are still tagged is_test=True via
+        # _is_test_file() so downstream consumers can filter them when
+        # appropriate.
+        #
+        # The following ARE still blocked because they typically hold
+        # binary fixtures, generated artifacts, or browser-driven test
+        # rigs whose content rarely answers code questions:
+        "e2e",
+        "fixtures",
+        "conftest",
     }
 )
 

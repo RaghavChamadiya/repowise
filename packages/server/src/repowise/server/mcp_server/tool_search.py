@@ -24,13 +24,15 @@ async def search_codebase(
     page_type: str | None = None,
     repo: str | None = None,
 ) -> dict:
-    """Semantic search over the full wiki. Ask in natural language.
+    """Semantic search over the wiki. Use when ``get_answer`` did not return
+    a confident result and you need to discover candidate pages by topic.
 
     Args:
-        query: Natural language search query (e.g. "how does authentication work?").
-        limit: Maximum results to return (default 5).
-        page_type: Optional filter by page type (file_page, module_page, etc.).
-        repo: Repository path, name, or ID.
+        query: natural-language search query.
+        limit: maximum number of results to return (default 5).
+        page_type: optional filter on page kind (e.g. ``file_page``,
+            ``module_page``, ``symbol_spotlight``).
+        repo: repository identifier; usually omitted in single-repo deployments.
     """
     async with get_session(_state._session_factory) as session:
         # Ensure repo exists

@@ -16,7 +16,7 @@ For per-package detail (installation, full API reference, all CLI flags, file ma
 |---------|--------|----------------|
 | `packages/core` | [`packages/core/README.md`](../packages/core/README.md) | Ingestion, generation, persistence, providers — all key classes with code examples |
 | `packages/cli` | [`packages/cli/README.md`](../packages/cli/README.md) | All 10 CLI commands with every flag documented |
-| `packages/server` | [`packages/server/README.md`](../packages/server/README.md) | All REST API endpoints, 8 MCP tools, webhook setup, scheduler jobs |
+| `packages/server` | [`packages/server/README.md`](../packages/server/README.md) | All REST API endpoints, 10 MCP tools, webhook setup, scheduler jobs |
 | `packages/web` | [`packages/web/README.md`](../packages/web/README.md) | Every frontend file with purpose — API client, hooks, components, pages |
 
 ---
@@ -78,7 +78,7 @@ For per-package detail (installation, full API reference, all CLI flags, file ma
 │      Three Stores     │   │              Consumers                  │
 │                      │   │                                         │
 │  SQL (wiki pages,    │   │  Web UI     MCP Server   GitHub Action  │
-│  jobs, symbols,      │   │  (Next.js)  (9 tools)    (CI/CD)        │
+│  jobs, symbols,      │   │  (Next.js)  (10 tools)   (CI/CD)        │
 │  versions)           │   │                                         │
 │                      │   │  repowise CLI                           │
 │  Vector (LanceDB /   │   │  (init, update, watch,                  │
@@ -167,7 +167,7 @@ repowise/
 │   ├── server/                 # Python: FastAPI REST API + MCP server
 │   │   └── src/repowise/server/
 │   │       ├── routers/         # FastAPI routers (repos, pages, jobs, symbols, graph, git, dead-code, decisions, search, claude-md)
-│   │       ├── mcp_server/      # MCP server package (8 tools, split into focused modules)
+│   │       ├── mcp_server/      # MCP server package (10 tools, split into focused modules)
 │   │       ├── webhooks/        # GitHub + GitLab handlers
 │   │       ├── job_executor.py  # Background pipeline executor — bridges REST endpoints to core pipeline
 │   │       └── scheduler.py     # APScheduler background jobs
@@ -219,9 +219,10 @@ Key tables:
 | Table | Purpose |
 |-------|---------|
 | `repos` | Registered repositories, sync state, provider config |
-| `wiki_pages` | All generated wiki pages with content, metadata, confidence score |
+| `wiki_pages` | All generated wiki pages with content, metadata, confidence score, and a short LLM-extracted `summary` (1–3 sentences) used by `get_context` to keep responses bounded |
 | `page_versions` | Full version history of every page (for diff view) |
 | `symbols` | Symbol index: every function, class, method across all files |
+| `answer_cache` | Memoised `get_answer` responses keyed by `(repository_id, question_hash)` plus the provider/model used. Repeated questions return at zero LLM cost; cache entries are invalidated by repository re-indexing. |
 | `generation_jobs` | Job state machine with checkpoint fields for resumability |
 | `webhook_events` | Every received webhook event (deduplication, audit, retry) |
 | `symbol_rename_history` | Detected renames for auditing and targeted text patching |
@@ -423,6 +424,14 @@ cross-package edges tracked in the graph.
 
 Each `FileInfo` is tagged with: `language`, `is_test`, `is_config`, `is_api_contract`,
 `is_entry_point`, `git_hash`. These tags influence generation priority and prompt choice.
+
+**Test files are first-class wiki targets.** The page generator includes any file
+tagged `is_test=True` that has at least one extracted symbol, even if the file's
+PageRank is near zero (which is typical: nothing imports test files back, so
+graph-centrality metrics never select them on their own). Test files answer
+questions of the form *"what test exercises X"* / *"where is Y verified"*, and
+the doc layer is the right place to surface those. Users who want to exclude
+tests from the wiki entirely can pass `--skip-tests` to `repowise init`.
 
 ### 5.2 AST Parsing
 
@@ -1103,7 +1112,7 @@ file, tokens used, estimated cost, estimated time remaining).
 repowise includes an interactive chat interface that lets users ask questions about
 their codebase and receive answers grounded in the wiki, dependency graph, git
 history, and architectural decisions. The chat agent uses whichever LLM provider
-the user has configured and has access to all 8 MCP tools.
+the user has configured and has access to all 10 MCP tools.
 
 See [`docs/CHAT.md`](CHAT.md) for the full technical reference covering the
 backend agentic loop, SSE streaming protocol, provider abstraction extensions,
@@ -1114,7 +1123,7 @@ database schema, frontend component architecture, and artifact rendering system.
 - **Provider-agnostic** — the chat agent goes through the same provider abstraction
   as documentation generation. A `ChatProvider` protocol extends `BaseProvider` with
   `stream_chat()` for streaming + tool use without breaking existing callers.
-- **Tool reuse** — the 8 MCP tools are called directly as Python functions (no
+- **Tool reuse** — the 10 MCP tools are called directly as Python functions (no
   subprocess round-trip). Tool schemas are defined once in `chat_tools.py` and
   fed to both the LLM and the executor.
 - **SSE streaming** — `POST /api/repos/{repo_id}/chat/messages` runs the agentic

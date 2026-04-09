@@ -2,7 +2,7 @@
 
 The codebase chat feature lets users have an interactive conversation with their
 codebase. The agent uses whichever LLM provider the user has configured, has
-access to all 8 MCP tools, and streams responses back to the browser in real time
+access to all 10 MCP tools, and streams responses back to the browser in real time
 showing tool calls as they happen and rendering results in an artifact panel.
 
 ---
@@ -158,7 +158,7 @@ class ChatProvider(Protocol):
 
 Defined in `packages/server/src/repowise/server/chat_tools.py`.
 
-Single source of truth for tool schemas and execution. Imports the 8 MCP tool
+Single source of truth for tool schemas and execution. Imports the 10 MCP tool
 functions directly from `repowise.server.mcp_server`.
 
 ```python

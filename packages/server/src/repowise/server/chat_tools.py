@@ -1,6 +1,6 @@
 """Chat tool registry — single source of truth for tool schemas and execution.
 
-Imports the 8 MCP tool functions directly and exposes them as a callable registry
+Imports the 10 MCP tool functions directly and exposes them as a callable registry
 for the agentic chat loop. Also provides OpenAI-format tool definitions for the LLM.
 """
 

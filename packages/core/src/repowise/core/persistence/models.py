@@ -100,6 +100,11 @@ class Page(Base):
     page_type: Mapped[str] = mapped_column(String(64), nullable=False)
     title: Mapped[str] = mapped_column(Text, nullable=False)
     content: Mapped[str] = mapped_column(Text, nullable=False)
+    # 1–3 sentence purpose blurb. Always populated (LLM-extracted from content
+    # for full mode, deterministic structure summary for index-only mode).
+    # Surfaced by get_context as the default narrative; content is gated
+    # behind include=["full_doc"] to keep MCP responses small.
+    summary: Mapped[str] = mapped_column(Text, nullable=False, default="")
     target_path: Mapped[str] = mapped_column(Text, nullable=False)
     source_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     model_name: Mapped[str] = mapped_column(String(128), nullable=False)
@@ -474,4 +479,42 @@ class DeadCodeFinding(Base):
     note: Mapped[str | None] = mapped_column(Text, nullable=True)
     analyzed_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=_now_utc
+    )
+
+
+class AnswerCache(Base):
+    """Cached LLM-synthesized answers from get_answer.
+
+    Keyed by (repo_id, question_hash). The hash is computed from the
+    normalized question text only — answer cache invalidation on index
+    change is handled by deleting rows for a repository when its alembic
+    head advances (cheap to rebuild).
+
+    Storing payload as a single JSON text column keeps the schema stable
+    across get_answer response shape changes.
+    """
+
+    __tablename__ = "answer_cache"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_new_uuid)
+    repository_id: Mapped[str] = mapped_column(
+        String(32), ForeignKey("repositories.id", ondelete="CASCADE"), nullable=False
+    )
+    # SHA-256 hex of the normalized (lowercased + stripped) question.
+    question_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    # Original (un-normalized) question, kept for human inspection.
+    question: Mapped[str] = mapped_column(Text, nullable=False)
+    # Full JSON payload from get_answer (answer, citations, confidence,
+    # fallback_targets, retrieval).
+    payload_json: Mapped[str] = mapped_column(Text, nullable=False)
+    # Provider + model used for the synthesis call (lets us invalidate
+    # selectively if a better model is configured later).
+    provider_name: Mapped[str] = mapped_column(String(64), nullable=False, default="")
+    model_name: Mapped[str] = mapped_column(String(128), nullable=False, default="")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_now_utc
+    )
+
+    __table_args__ = (
+        UniqueConstraint("repository_id", "question_hash", name="uq_answer_cache_q"),
     )

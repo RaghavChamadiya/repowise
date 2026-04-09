@@ -964,6 +964,7 @@ class PageGenerator:
             page_type=page_type,
             title=title,
             content=response.content,
+            summary=_extract_summary(response.content),
             source_hash=source_hash,
             model_name=self._provider.model_name,
             provider_name=self._provider.provider_name,
@@ -985,6 +986,40 @@ class PageGenerator:
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+
+def _extract_summary(content: str, max_chars: int = 320) -> str:
+    """Extract a 1–3 sentence purpose blurb from rendered wiki markdown.
+
+    Strategy: walk lines top-to-bottom, skip blanks/headings/list-markers/HTML
+    comments, and take the first prose paragraph. Truncate at sentence boundary
+    near max_chars. Fully deterministic — no extra LLM call.
+    """
+    if not content:
+        return ""
+    para_lines: list[str] = []
+    for raw in content.splitlines():
+        line = raw.strip()
+        if not line:
+            if para_lines:
+                break
+            continue
+        if line.startswith(("#", ">", "```", "---", "<!--", "|", "- ", "* ", "1.")):
+            if para_lines:
+                break
+            continue
+        para_lines.append(line)
+    if not para_lines:
+        return ""
+    text = " ".join(para_lines)
+    if len(text) <= max_chars:
+        return text
+    # Truncate at the last sentence boundary before max_chars
+    cut = text[:max_chars]
+    last_period = max(cut.rfind(". "), cut.rfind("? "), cut.rfind("! "))
+    if last_period > max_chars // 2:
+        return cut[: last_period + 1]
+    return cut.rstrip() + "…"
 
 
 def _is_infra_file(parsed: ParsedFile) -> bool:
@@ -1020,17 +1055,26 @@ def _is_significant_file(
     bet = betweenness.get(path, 0.0)
     is_entry = parsed.file_info.is_entry_point
 
-    # F3: package __init__.py files are module interfaces — always include
+    # Package __init__.py files are module interfaces — always include them
     # if they have any symbols (re-exports, __getattr__, etc.)
     if path.endswith("__init__.py") and len(parsed.symbols) > 0:
+        return True
+
+    # Test files are always significant when present. They have near-zero
+    # PageRank because nothing imports them back, but they answer "what
+    # tests exercise X" / "where is Y verified" questions that the doc layer
+    # is the right place to surface. Users who want to exclude tests
+    # entirely can do so via skip_tests in the orchestrator upstream.
+    if parsed.file_info.is_test and len(parsed.symbols) > 0:
         return True
 
     # Must appear significant in the graph
     if not (is_entry or pr >= pr_threshold or bet > 0.0):
         return False
 
-    # F2: waive symbol requirement for connected files with no original
-    # definitions (e.g. state/config modules imported by many files)
+    # Waive the symbol-count requirement for graph-connected files that have
+    # no original definitions of their own (e.g. state/config modules that
+    # are imported by many files but mostly re-export or assemble values).
     if len(parsed.symbols) < config.file_page_min_symbols:
         return is_entry or pr >= pr_threshold
 

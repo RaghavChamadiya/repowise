@@ -890,7 +890,7 @@ The chat endpoint runs an agentic loop where the LLM can call Repowise tools:
 User: "How does auth work in this codebase?"
      │
      ▼
-  LLM receives: system prompt (with repo context) + 8 tool schemas
+  LLM receives: system prompt (with repo context) + 10 tool schemas
      │
      ▼
   Iteration 1: LLM calls search_codebase("authentication")
@@ -914,7 +914,7 @@ Max 10 iterations per request. Streamed via SSE (Server-Sent Events).
 
 ## 8. MCP Tools
 
-MCP (Model Context Protocol) lets AI coding assistants (Claude Code, Cursor, Windsurf, Cline) call Repowise tools directly. There are 8 tools, each answering a specific question.
+MCP (Model Context Protocol) lets AI coding assistants (Claude Code, Cursor, Windsurf, Cline) call Repowise tools directly. There are 10 tools, each answering a specific question.
 
 ### Tool 1: `get_overview` — "What is this codebase?"
 

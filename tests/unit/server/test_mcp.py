@@ -704,6 +704,95 @@ async def test_get_context_not_found(setup_mcp):
     assert "error" in t
 
 
+# ---- get_context: truncation ----
+
+
+def _make_big_response(n_targets: int = 5, n_symbols: int = 80, body_chars: int = 4000) -> dict:
+    """Build a synthetic get_context response well over the 32 KB budget."""
+    targets = {}
+    for i in range(n_targets):
+        name = f"pkg/mod_{i}/file_{i}.ext"
+        targets[name] = {
+            "target": name,
+            "type": "file",
+            "docs": {
+                "title": f"File {i}",
+                "summary": "s" * 200,
+                "content_md": "x" * body_chars,
+                "symbols": [
+                    {
+                        "name": f"Sym{i}_{j}",
+                        "kind": "class" if j % 5 == 0 else "function",
+                        "signature": f"sig_{j}(...)",
+                        "start_line": j * 10,
+                        "end_line": j * 10 + 8,
+                        "docstring": "d" * 300,
+                    }
+                    for j in range(n_symbols)
+                ],
+            },
+        }
+    return {"targets": targets, "_meta": {"timing_ms": 1.0}}
+
+
+def test_truncate_to_budget_enforces_cap():
+    from repowise.server.mcp_server.tool_context import (
+        _CHAR_BUDGET,
+        _truncate_to_budget,
+    )
+
+    big = _make_big_response()
+    raw_size = len(json.dumps(big, separators=(",", ":"), default=str))
+    assert raw_size > _CHAR_BUDGET, "fixture must exceed budget to be meaningful"
+
+    out = _truncate_to_budget(big)
+    final_size = len(json.dumps(out, separators=(",", ":"), default=str))
+    assert final_size <= _CHAR_BUDGET
+    assert out["truncated"] is True
+    # At least one target must survive.
+    assert len(out["targets"]) >= 1
+
+
+def test_truncate_flags_and_dropped_fields_populate():
+    from repowise.server.mcp_server.tool_context import _truncate_to_budget
+
+    big = _make_big_response(n_targets=6, n_symbols=60, body_chars=5000)
+    out = _truncate_to_budget(big)
+
+    assert out["truncated"] is True
+    # Either whole targets were dropped, or individual symbols were dropped —
+    # both are acceptable outcomes; at least one must be populated.
+    dropped_any = bool(out["dropped_targets"]) or bool(out["dropped_symbols"])
+    assert dropped_any
+    # Heavy optional fields should have been stripped from surviving targets.
+    for tgt in out["targets"].values():
+        assert "content_md" not in tgt.get("docs", {})
+    # Dropped symbol lists (if any) must reference actual symbol names.
+    for tgt_name, names in out["dropped_symbols"].items():
+        assert tgt_name in big["targets"] or tgt_name not in out["targets"]
+        assert all(isinstance(n, str) for n in names)
+
+
+def test_truncate_noop_when_under_budget():
+    from repowise.server.mcp_server.tool_context import _truncate_to_budget
+
+    small = {
+        "targets": {
+            "a.py": {
+                "target": "a.py",
+                "type": "file",
+                "docs": {"title": "A", "symbols": [{"name": "f", "kind": "function"}]},
+            }
+        },
+        "_meta": {},
+    }
+    out = _truncate_to_budget(small)
+    assert out["truncated"] is False
+    assert out["dropped_targets"] == []
+    assert out["dropped_symbols"] == {}
+    assert "content_md" not in out["targets"]["a.py"]["docs"]  # wasn't there anyway
+
+
 # ---- Tool 3: get_risk ----
 
 
