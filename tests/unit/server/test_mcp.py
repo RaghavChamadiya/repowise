@@ -611,7 +611,11 @@ async def test_get_overview_repo_not_found(setup_mcp):
 async def test_get_context_single_file(setup_mcp):
     from repowise.server.mcp_server import get_context
 
-    result = await get_context(["src/auth/service.py"])
+    result = await get_context(
+        ["src/auth/service.py"],
+        include=["docs", "full_doc", "ownership", "last_change", "decisions", "freshness"],
+        compact=False,
+    )
     targets = result["targets"]
     assert "src/auth/service.py" in targets
     t = targets["src/auth/service.py"]
@@ -642,7 +646,11 @@ async def test_get_context_single_file(setup_mcp):
 async def test_get_context_single_module(setup_mcp):
     from repowise.server.mcp_server import get_context
 
-    result = await get_context(["src/auth"])
+    result = await get_context(
+        ["src/auth"],
+        include=["docs", "full_doc", "ownership", "last_change", "decisions", "freshness"],
+        compact=False,
+    )
     targets = result["targets"]
     assert "src/auth" in targets
     t = targets["src/auth"]
@@ -658,7 +666,11 @@ async def test_get_context_single_module(setup_mcp):
 async def test_get_context_single_symbol(setup_mcp):
     from repowise.server.mcp_server import get_context
 
-    result = await get_context(["AuthService"])
+    result = await get_context(
+        ["AuthService"],
+        include=["docs", "full_doc"],
+        compact=False,
+    )
     targets = result["targets"]
     assert "AuthService" in targets
     t = targets["AuthService"]
