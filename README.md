@@ -21,11 +21,11 @@ Four intelligence layers. Ten MCP tools. One `pip install`.
 
 </div>
 
-When Claude Code reads a 3,000-file codebase, it reads files. It does not know who owns them, which ones change together, which ones are dead, or why they were built the way they were.
+Your AI coding agent reads files. It does not know who owns them, which ones change together, which ones are dead, or why they were built the way they were. It has the source code and zero institutional knowledge.
 
-repowise fixes that. It indexes your codebase into four intelligence layers — dependency graph, git history, auto-generated documentation, and architectural decisions — and exposes them to Claude Code (and any MCP-compatible AI agent) through ten precisely designed tools.
+repowise fixes that. It indexes your codebase into four intelligence layers — dependency graph, git history, auto-generated documentation, and architectural decisions — and exposes them to Claude Code (and any MCP-compatible AI agent) through ten precisely designed tools. **27× fewer tokens per query. 36% cheaper. Same answer quality.**
 
-The result: Claude Code answers *"why does auth work this way?"* instead of *"here is what auth.ts contains."*
+The result: your agent answers *"why does auth work this way?"* instead of *"here is what auth.ts contains."*
 
 ---
 
@@ -44,56 +44,19 @@ The result: Claude Code answers *"why does auth work this way?"* instead of *"he
 >
 > **32 / 48 (67 %)** tasks are cheaper with repowise — at parity quality (judge Δ ≈ −0.01).
 
----
+### Token efficiency — because context windows aren't free
 
-## What's new
+There's a small genre of "token efficiency" benchmarks going around. It would be impolite not to contribute one. Ours runs on the 30 most recent non-merge commits of `pallets/flask` and asks one question: *to understand a commit, how many tokens does each strategy ask the model to read?*
 
-### Faster indexing
-Indexing is now fully parallel. A `ProcessPoolExecutor` distributes AST parsing across all CPU cores. Graph construction and git history indexing run concurrently via `asyncio.gather`. Per-file git history is fetched through a thread executor with a semaphore to cap concurrency — full parallelism without overwhelming the system. Large repos index noticeably faster.
+| Strategy | Tokens / commit |
+|---|---|
+| Naive (full contents of changed files) | 64,039 |
+| `git diff` only | 14,888 |
+| **`repowise get_context`** | **2,391** |
 
-### RAG-aware documentation generation
-Every wiki page is generated with richer context: before calling the LLM, repowise fetches the already-generated summaries of each file's direct dependencies from the vector store and injects them into the prompt. Generation is topologically sorted so leaf files are always written first. The LLM sees what its dependencies actually do, not just their names — producing more accurate, cross-referenced documentation.
+**209× less than naive (mean), 26.8× pooled, 1,214× best case. 41.7× less than git diff (mean), 6.2× pooled.** Same file list, same tokenizer (`cl100k_base`), no per-strategy fudge. We report mean, pooled, and median together because picking just one would be the kind of thing other people in this genre seem to do.
 
-### Atomic three-store transactions
-`AtomicStorageCoordinator` buffers writes across the SQL database, the in-memory dependency graph, and the vector store, then flushes them in a single coordinated operation. If any store fails, all three are rolled back — no partial writes, no silent drift. Run `repowise doctor` to inspect drift across all three stores and repair mismatches.
-
-### Dynamic import hints
-The dependency graph now captures edges that pure AST parsing misses:
-- Django `INSTALLED_APPS`, `ROOT_URLCONF`, and `MIDDLEWARE` settings
-- pytest fixture wiring through `conftest.py`
-- Node/TypeScript path aliases from `tsconfig.json` `paths` and `package.json` `exports`
-
-These edges appear in `get_context`, `get_risk`, and `get_dependency_path` like any other dependency.
-
-### Single-call answers via `get_answer`
-A new `get_answer(question)` MCP tool collapses the typical "search → read → reason" loop into one call. It runs retrieval over the wiki, gates on confidence (top-hit dominance ratio), and synthesizes a 2–5 sentence answer with concrete file/symbol citations. High-confidence answers can be cited directly; ambiguous ones return ranked excerpts so the agent grounds in source. Responses are cached per repository by question hash, so repeated questions cost nothing.
-
-### Symbol lookup via `get_symbol`
-A new `get_symbol(symbol_id)` MCP tool resolves a fully-qualified symbol identifier (e.g. `pkg/module.py::Class::method`) to its definition, returning the source body, signature, file location, and any cross-referenced docstring — without the agent having to grep then read.
-
-### Test files in the documentation layer
-The page generator now treats test files as first-class wiki targets. They have near-zero PageRank (nothing imports them back) but answer real questions like "what test exercises X" or "where is Y verified", which the doc layer is the right place to surface. Filtering remains available via `skip_tests` for users who prefer to exclude them.
-
-### Temporal hotspot decay
-Hotspot scoring now uses an exponentially time-decayed score with a 180-day half-life layered on top of the raw 90-day churn count. A commit from a year ago contributes roughly 25% as much as a commit from today. The score reflects recent activity, not just total volume. Surfaced in `get_overview` and `get_risk`.
-
-### Percentile ranks via SQL window function
-Incremental updates now recompute global percentile ranks for every file using a single `PERCENT_RANK()` SQL window function. Previously this required loading all rows into Python. The new approach is both faster and correct on large repos — no sampling, no approximation.
-
-### PR blast radius
-`get_risk(changed_files=[...])` now returns a full blast-radius report: transitive affected files, co-change warnings for historical co-change partners not included in the PR, recommended reviewers ranked by temporal ownership, test gap detection, and an overall 0–10 risk score. Same flat tool surface — substantially more signal per call.
-
-### Knowledge map in `get_overview`
-`get_overview` now surfaces: top owners across the codebase, "bus factor 1" knowledge silos (files where one person owns >80% of commits), and onboarding targets — high-centrality files with the weakest documentation coverage. Useful for team planning and risk review.
-
-### Test gaps and security signals in `get_risk`
-`get_risk` now includes a `test_gap` flag per file (no test file co-changes detected) and `security_signals` — static pattern detection for common risk categories: authentication bypass patterns, `eval`-family calls, raw SQL string construction, and weak cryptography. Signals appear alongside the existing hotspot and ownership data.
-
-### LLM cost tracking
-Every LLM call is logged to a new `llm_costs` table with operation type, model, token counts, and estimated cost. A new `repowise costs` CLI command lets you group spending by operation, model, or day. The indexing progress bar now shows a live `Cost: $X.XXX` counter next to the spinner.
-
-### Configurable dead-code sensitivity
-The `repowise dead-code` command and the `get_dead_code` MCP tool now expose sensitivity controls: `--min-confidence` (default 0.70), `--include-internals` (include private/underscore-prefixed symbols), and `--include-zombie-packages` (packages present in `package.json` / `pyproject.toml` but unused in the graph). Tune the output to your cleanup goals.
+> Full methodology, per-task tables, and the actual SWE-QA evaluation (which has third-party ground truth and an independently-scored LLM judge — unlike this sanity-check): **[repowise-bench →](https://github.com/repowise-dev/repowise-bench)**
 
 ---
 
@@ -380,9 +343,10 @@ Hosted adds what only makes sense in a managed, multi-user environment:
 
 - **Shared team context layer** — one CLAUDE.md backed by the full graph and decision layer, auto-injected into every team member's Claude Code session via MCP
 - **Session intelligence harvesting** — architectural decisions extracted from AI coding sessions and proposed to the team knowledge base automatically
+- **Security vulnerability reporting** — repowise scans for known vulnerability patterns, dependency risks, and security anti-patterns across your codebase and surfaces them proactively. Not just `eval` calls — real CVE-aware analysis
 - **Engineering leader dashboard** — bus factor trends, hotspot evolution over time, cross-repo dead code, ownership drift
 - **Managed webhooks** — zero-configuration auto re-index on every commit to any branch
-- **Integrations** — Slack alerts, Notion sync, Confluence sync, Jira and Linear decision linking
+- **Integrations** — Slack alerts, Jira and Linear decision linking, Confluence and Notion doc sync, GitHub and GitLab webhooks, PagerDuty escalation routing
 - **Cross-repo intelligence** — hotspots, dead code, and ownership across all your repositories at once
 
 [Get in touch →](https://www.repowise.dev/#contact) · [hello@repowise.dev](mailto:hello@repowise.dev)
@@ -441,7 +405,9 @@ repowise reindex                  # rebuild vector store (no LLM calls)
 
 **Config / contracts:** OpenAPI · Protobuf · GraphQL · Dockerfile · GitHub Actions YAML · Makefile
 
-Adding a new language requires one `.scm` tree-sitter query file and one config entry. No changes to the parser. See [Adding a new language](docs/CONTRIBUTING.md#adding-a-new-language).
+More languages coming soon — Swift, Scala, PHP, Dart, and Elixir are on the roadmap.
+
+Adding a new language requires one `.scm` tree-sitter query file and one config entry. No changes to the parser. PRs welcome. See [Adding a new language](docs/CONTRIBUTING.md#adding-a-new-language).
 
 ---
 
@@ -506,7 +472,7 @@ For commercial licensing — embedding repowise in a product, white-labeling, or
 
 <div align="center">
 
-Built for engineers who got tired of asking *"why does this code exist?"*
+Built for engineers who got tired of watching their AI agent `cat` the same file for the fourth time.
 
 [repowise.dev](https://repowise.dev) · [Live Demo →](https://repowise.dev/examples) · [Discord](https://discord.gg/cQVpuDB6rh) · [X](https://x.com/repowisedev) · [hello@repowise.dev](mailto:hello@repowise.dev)
 
