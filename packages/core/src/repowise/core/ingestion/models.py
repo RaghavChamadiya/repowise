@@ -224,6 +224,23 @@ class CallSite:
     argument_count: int | None  # number of arguments (None if unknown)
 
 
+HeritageKind = Literal["extends", "implements", "trait_impl", "mixin"]
+
+
+@dataclass
+class HeritageRelation:
+    """A class/struct/impl inheritance or interface implementation relationship.
+
+    Extracted from AST class definitions. Resolved to graph edges by
+    HeritageResolver during the graph build phase.
+    """
+
+    child_name: str  # the class/struct being defined
+    parent_name: str  # superclass, interface, or trait name
+    kind: HeritageKind  # relationship type
+    line: int  # 1-indexed line of the class definition
+
+
 # ---------------------------------------------------------------------------
 # Edge types used in the symbol-level dependency graph
 # ---------------------------------------------------------------------------
@@ -253,6 +270,7 @@ class ParsedFile:
     imports: list[Import]
     exports: list[str]  # names exported by this file
     calls: list[CallSite] = field(default_factory=list)
+    heritage: list[HeritageRelation] = field(default_factory=list)
     docstring: str | None = None  # module/file-level docstring
     parse_errors: list[str] = field(default_factory=list)  # non-fatal parser warnings/errors
     content_hash: str = ""  # SHA-256 hex of raw file bytes
