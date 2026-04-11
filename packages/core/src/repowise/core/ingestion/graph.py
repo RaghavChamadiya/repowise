@@ -128,6 +128,12 @@ class GraphBuilder:
         self._tsconfig_resolver: Any | None = None  # TsconfigResolver (lazy import)
         self._go_module_path: str | None = self._read_go_module_path()
 
+        # Community / flow caches (invalidated on build)
+        self._community_cache: dict[str, int] | None = None
+        self._symbol_community_cache: dict[str, int] | None = None
+        self._community_info_cache: dict[int, Any] | None = None
+        self._community_algo: str = ""
+
     def set_tsconfig_resolver(self, resolver: Any) -> None:
         """Attach a :class:`TsconfigResolver` for TS/JS path-alias resolution."""
         self._tsconfig_resolver = resolver
@@ -195,6 +201,12 @@ class GraphBuilder:
         Preserves symbol nodes and structural edges (defines, has_method)
         while rebuilding import and call edges.
         """
+        # Invalidate cached metrics
+        self._community_cache = None
+        self._symbol_community_cache = None
+        self._community_info_cache = None
+        self._community_algo = ""
+
         # Clear import/call edges but keep structural edges (defines, has_method)
         edges_to_remove = [
             (u, v)
@@ -357,23 +369,79 @@ class GraphBuilder:
         return nx.betweenness_centrality(g, normalized=True)
 
     def community_detection(self) -> dict[str, int]:
-        """Assign a community ID to each file node using the Louvain algorithm.
+        """Assign a community ID to each file node.
 
-        Returns dict[path, community_id]. Operates on file-level subgraph only.
+        Uses Leiden (graspologic) when available, falls back to Louvain.
+        Results are cached until the next ``build()`` call.
+        Returns dict[path, community_id].
         """
-        g = self.file_subgraph()
-        if g.number_of_nodes() == 0:
-            return {}
+        if self._community_cache is not None:
+            return self._community_cache
+
+        from repowise.core.analysis.communities import detect_file_communities
+
         try:
-            communities = nx.community.louvain_communities(g.to_undirected(), seed=42)
-            result: dict[str, int] = {}
-            for community_id, members in enumerate(communities):
-                for node in members:
-                    result[node] = community_id
-            return result
+            assignment, info, algo = detect_file_communities(self._graph)
+            self._community_cache = assignment
+            self._community_info_cache = info
+            self._community_algo = algo
         except Exception as exc:
-            log.warning("Community detection failed", error=str(exc))
-            return {node: 0 for node in g.nodes()}
+            log.warning("community_detection_failed", error=str(exc))
+            file_nodes = [
+                n for n, d in self._graph.nodes(data=True)
+                if d.get("node_type", "file") == "file"
+            ]
+            self._community_cache = {n: 0 for n in file_nodes}
+            self._community_info_cache = {}
+            self._community_algo = "failed"
+        return self._community_cache
+
+    def symbol_communities(self) -> dict[str, int]:
+        """Assign a community ID to each symbol node using call/heritage edges.
+
+        Returns dict[symbol_id, community_id]. Cached until next ``build()``.
+        """
+        if self._symbol_community_cache is not None:
+            return self._symbol_community_cache
+
+        from repowise.core.analysis.communities import detect_symbol_communities
+
+        try:
+            self._symbol_community_cache = detect_symbol_communities(self._graph)
+        except Exception as exc:
+            log.warning("symbol_community_detection_failed", error=str(exc))
+            self._symbol_community_cache = {}
+        return self._symbol_community_cache
+
+    def community_info(self) -> dict[int, Any]:
+        """Return metadata for each file-level community.
+
+        Returns dict[community_id, CommunityInfo]. Populates cache via
+        ``community_detection()`` if not yet computed.
+        """
+        if self._community_info_cache is None:
+            self.community_detection()
+        return self._community_info_cache or {}
+
+    def execution_flows(self, config: Any | None = None) -> Any:
+        """Trace execution flows from entry-point symbols.
+
+        Returns an ``ExecutionFlowReport``. Requires symbol nodes and call
+        edges to be present in the graph.
+        """
+        from repowise.core.analysis.execution_flows import (
+            ExecutionFlowReport,
+            trace_execution_flows,
+        )
+
+        cd = self.community_detection()
+        try:
+            return trace_execution_flows(self._graph, cd, config)
+        except Exception as exc:
+            log.warning("execution_flow_tracing_failed", error=str(exc))
+            return ExecutionFlowReport(
+                total_entry_points_scored=0, total_flows=0, flows=[],
+            )
 
     # ------------------------------------------------------------------
     # Serialisation

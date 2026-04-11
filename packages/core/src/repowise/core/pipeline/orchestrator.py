@@ -121,6 +121,9 @@ class PipelineResult:
     languages: set[str] = field(default_factory=set)
     elapsed_seconds: float = 0.0
 
+    execution_flow_report: Any | None = None
+    """``ExecutionFlowReport`` or None (populated after graph build)."""
+
     # Traversal stats
     traversal_stats: Any | None = None
     """``TraversalStats`` from the file traverser, or None."""
@@ -308,6 +311,13 @@ async def run_pipeline(
             resume=resume,
         )
 
+    # ---- Execution flow tracing -----------------------------------------------
+    execution_flow_report = None
+    try:
+        execution_flow_report = graph_builder.execution_flows()
+    except Exception as _flow_err:
+        logger.warning("execution_flow_tracing_skipped", error=str(_flow_err))
+
     # ---- Build result -------------------------------------------------------
     elapsed = time.monotonic() - start
     languages = {fi.language for fi in file_infos if hasattr(fi, "language") and fi.language}
@@ -324,6 +334,7 @@ async def run_pipeline(
         git_summary=git_summary,
         dead_code_report=dead_code_report,
         decision_report=decision_report,
+        execution_flow_report=execution_flow_report,
         generated_pages=generated_pages,
         traversal_stats=traversal_stats,
         repo_name=repo_path.name,

@@ -62,6 +62,8 @@ async def persist_pipeline_result(
     pr = result.graph_builder.pagerank()
     bc = result.graph_builder.betweenness_centrality()
     cd = result.graph_builder.community_detection()
+    sc = result.graph_builder.symbol_communities()
+    ci = result.graph_builder.community_info()
 
     nodes = []
     for node_id in graph.nodes:
@@ -80,6 +82,22 @@ async def persist_pipeline_result(
             "betweenness": bc.get(node_id, 0.0),
             "community_id": cd.get(node_id, 0),
         }
+
+        # Community metadata
+        community_meta: dict[str, Any] = {}
+        if node_type == "file":
+            cid = cd.get(node_id, 0)
+            comm_info = ci.get(cid)
+            if comm_info:
+                community_meta = {
+                    "label": comm_info.label,
+                    "cohesion": comm_info.cohesion,
+                }
+        elif node_type == "symbol":
+            sym_cid = sc.get(node_id)
+            if sym_cid is not None:
+                community_meta = {"symbol_community_id": sym_cid}
+        node_dict["community_meta_json"] = json.dumps(community_meta)
 
         # Symbol-specific fields
         if node_type == "symbol":
