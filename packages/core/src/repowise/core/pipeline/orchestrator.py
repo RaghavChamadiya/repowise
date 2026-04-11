@@ -52,10 +52,12 @@ def _parse_one(path_and_fi_and_bytes: tuple) -> Any:
     try:
         if _WORKER_PARSER is None:
             from repowise.core.ingestion import ASTParser
+
             _WORKER_PARSER = ASTParser()
         return _WORKER_PARSER.parse_file(fi, source)
     except Exception as exc:
         return (fi.abs_path, str(exc))
+
 
 # Maximum seconds to spend on decision extraction before giving up.
 # Large repos with tens of thousands of files can take arbitrarily long.
@@ -119,6 +121,10 @@ class PipelineResult:
     languages: set[str] = field(default_factory=set)
     elapsed_seconds: float = 0.0
 
+    # Traversal stats
+    traversal_stats: Any | None = None
+    """``TraversalStats`` from the file traverser, or None."""
+
 
 # ---------------------------------------------------------------------------
 # Pipeline
@@ -133,6 +139,7 @@ async def run_pipeline(
     skip_tests: bool = False,
     skip_infra: bool = False,
     exclude_patterns: list[str] | None = None,
+    include_submodules: bool = False,
     generate_docs: bool = False,
     llm_client: Any | None = None,
     embedder: Any | None = None,
@@ -212,21 +219,26 @@ async def run_pipeline(
         return await _run_ingestion(
             repo_path,
             exclude_patterns=exclude_patterns,
+            include_submodules=include_submodules,
             skip_tests=skip_tests,
             skip_infra=skip_infra,
             progress=progress,
         )
 
     (
-        parsed_files,
-        file_infos,
-        repo_structure,
-        source_map,
-        graph_builder,
-    ), (
-        git_summary,
-        git_metadata_list,
-        git_meta_map,
+        (
+            parsed_files,
+            file_infos,
+            repo_structure,
+            source_map,
+            graph_builder,
+            traversal_stats,
+        ),
+        (
+            git_summary,
+            git_metadata_list,
+            git_meta_map,
+        ),
     ) = await asyncio.gather(_ingestion_stage(), _git_stage())
 
     # Add co-change edges to the graph
@@ -264,9 +276,7 @@ async def run_pipeline(
     if progress:
         progress.on_message("info", "Phase 2: Analysis")
 
-    dead_code_report = await _run_dead_code_analysis(
-        graph_builder, git_meta_map, progress=progress
-    )
+    dead_code_report = await _run_dead_code_analysis(graph_builder, git_meta_map, progress=progress)
 
     decision_report = await _run_decision_extraction(
         repo_path,
@@ -315,6 +325,7 @@ async def run_pipeline(
         dead_code_report=dead_code_report,
         decision_report=decision_report,
         generated_pages=generated_pages,
+        traversal_stats=traversal_stats,
         repo_name=repo_path.name,
         file_count=len(parsed_files),
         symbol_count=symbol_count,
@@ -332,22 +343,29 @@ async def _run_ingestion(
     repo_path: Path,
     *,
     exclude_patterns: list[str] | None,
+    include_submodules: bool = False,
     skip_tests: bool,
     skip_infra: bool,
     progress: ProgressCallback | None,
-) -> tuple[list[Any], list[Any], Any, dict[str, bytes], Any]:
+) -> tuple[list[Any], list[Any], Any, dict[str, bytes], Any, Any]:
     """Traverse, parse, and build the dependency graph.
 
-    Returns (parsed_files, file_infos, repo_structure, source_map, graph_builder).
+    Returns (parsed_files, file_infos, repo_structure, source_map, graph_builder, traversal_stats).
     """
     from repowise.core.ingestion import ASTParser, FileTraverser, GraphBuilder
 
-    traverser = FileTraverser(repo_path, extra_exclude_patterns=exclude_patterns or None)
+    traverser = FileTraverser(
+        repo_path,
+        extra_exclude_patterns=exclude_patterns or None,
+        include_submodules=include_submodules,
+    )
 
     # Walk directory tree
     all_paths = list(traverser._walk())
     if progress:
-        progress.on_phase_start("traverse", len(all_paths))
+        # Use indeterminate progress (spinner) to avoid showing a misleading
+        # pre-filter total like "2132/83601".
+        progress.on_phase_start("traverse", None)
 
     # Parallel stat + header reads (I/O bound).
     # Use asyncio.wrap_future so the event loop stays responsive while waiting.
@@ -355,8 +373,7 @@ async def _run_ingestion(
     io_pool = ThreadPoolExecutor(max_workers=8)
     try:
         aws = [
-            asyncio.wrap_future(io_pool.submit(traverser._build_file_info, p))
-            for p in all_paths
+            asyncio.wrap_future(io_pool.submit(traverser._build_file_info, p)) for p in all_paths
         ]
         for coro in asyncio.as_completed(aws):
             try:
@@ -412,10 +429,7 @@ async def _run_ingestion(
 
     try:
         with ProcessPoolExecutor(max_workers=workers) as pool:
-            tasks = [
-                loop.run_in_executor(pool, _parse_one, item)
-                for item in fi_and_bytes
-            ]
+            tasks = [loop.run_in_executor(pool, _parse_one, item) for item in fi_and_bytes]
             # Use as_completed via asyncio.as_completed to report per-file progress.
             # We need to preserve (task → fi_and_bytes index) for source_map so we
             # wrap tasks in a list and drain with gather instead.
@@ -483,23 +497,51 @@ async def _run_ingestion(
     if progress:
         progress.on_item_done("graph")
 
-    # Report oversized file skips
-    if traverser._oversized_skip_count and progress:
-        progress.on_message(
-            "warning",
-            f"Skipped {traverser._oversized_skip_count} oversized files "
-            f"(>{traverser.max_file_size_bytes // 1024} KB)",
-        )
-        for path, size_bytes in sorted(
-            traverser._oversized_files, key=lambda x: x[1], reverse=True
-        ):
-            logger.info(
-                "oversized_file_skipped",
-                path=path,
-                size_kb=size_bytes // 1024,
-            )
+    # Emit filtering summary so users can see what was included/excluded
+    stats = traverser.stats
+    if progress:
+        parts: list[str] = []
+        if stats.skipped_gitignore:
+            parts.append(f"{stats.skipped_gitignore:,} by .gitignore")
+        if stats.skipped_blocked_extension:
+            parts.append(f"{stats.skipped_blocked_extension:,} by extension")
+        if stats.skipped_blocked_pattern:
+            parts.append(f"{stats.skipped_blocked_pattern:,} by filename pattern")
+        if stats.skipped_oversized:
+            parts.append(f"{stats.skipped_oversized:,} oversized")
+        if stats.skipped_binary:
+            parts.append(f"{stats.skipped_binary:,} binary")
+        if stats.skipped_generated:
+            parts.append(f"{stats.skipped_generated:,} generated")
+        if stats.skipped_extra_exclude:
+            parts.append(f"{stats.skipped_extra_exclude:,} by --exclude")
+        if stats.skipped_extra_ignore:
+            parts.append(f"{stats.skipped_extra_ignore:,} by .repowiseIgnore")
+        if stats.skipped_submodule:
+            parts.append(f"{stats.skipped_submodule:,} submodule dirs")
+        if stats.skipped_unknown_language:
+            parts.append(f"{stats.skipped_unknown_language:,} unknown type")
 
-    return parsed_files, file_infos, repo_structure, source_map, graph_builder
+        excluded_str = ", ".join(parts) if parts else "none"
+        progress.on_message(
+            "info",
+            f"Scanned {stats.total_paths_walked:,} files, {len(file_infos):,} included",
+        )
+        if parts:
+            progress.on_message("info", f"  Excluded: {excluded_str}")
+
+        # Language breakdown
+        if stats.lang_counts:
+            top_langs = sorted(stats.lang_counts.items(), key=lambda x: -x[1])[:6]
+            lang_str = ", ".join(f"{lang} {count:,}" for lang, count in top_langs)
+            rest_count = sum(
+                c for _, c in sorted(stats.lang_counts.items(), key=lambda x: -x[1])[6:]
+            )
+            if rest_count:
+                lang_str += f", other {rest_count:,}"
+            progress.on_message("info", f"  Languages: {lang_str}")
+
+    return parsed_files, file_infos, repo_structure, source_map, graph_builder, stats
 
 
 async def _run_git_indexing(
@@ -608,7 +650,9 @@ async def _run_decision_extraction(
             git_meta_map=git_meta_map,
             parsed_files=parsed_files,
         )
-        report = await asyncio.wait_for(extractor.extract_all(), timeout=DECISION_EXTRACTION_TIMEOUT_SECS)
+        report = await asyncio.wait_for(
+            extractor.extract_all(), timeout=DECISION_EXTRACTION_TIMEOUT_SECS
+        )
 
         if progress:
             inline = report.by_source.get("inline_marker", 0)
