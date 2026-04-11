@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [Unreleased]
+
+### Added
+- **Proactive context enrichment via Claude Code hooks** — `repowise init` now registers PreToolUse and PostToolUse hooks in `~/.claude/settings.json`. PreToolUse enriches every `Grep`/`Glob` call with graph context (importers, dependencies, symbols, git signals) at ~24ms latency. PostToolUse detects git commits and notifies the agent when the wiki is stale.
+- **`repowise augment` CLI command** — hook-driven context enrichment engine. Reads Claude Code hook payloads from stdin, queries local wiki.db, and returns enriched context as JSON. Not meant to be called manually.
+- **`install_claude_code_hooks()`** — idempotent hook registration in `mcp_config.py`. Merges repowise hooks into existing user hooks without clobbering.
+
+---
+
 ## [0.2.3] — 2026-04-11
 
 ### Added

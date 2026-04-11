@@ -73,6 +73,8 @@ If Node.js 20+ is installed, the web UI starts automatically. Otherwise, use Doc
 repowise mcp --transport stdio
 ```
 
+> **Automatic for Claude Code:** `repowise init` already registers the MCP server and installs PreToolUse/PostToolUse hooks in `~/.claude/settings.json`. Every `Grep`/`Glob` call is automatically enriched with graph context (importers, dependencies, symbols, git signals). After git commits, the agent is notified when the wiki is stale.
+
 ## 5. Keep It in Sync
 
 After pulling changes or editing code:

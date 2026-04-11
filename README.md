@@ -3,7 +3,7 @@
 <img src=".github/assets/logo.png" width="280" alt="repowise" /><br />
 **Codebase intelligence for AI-assisted engineering teams.**
 
-Four intelligence layers. Eleven MCP tools. One `pip install`.
+Four intelligence layers. Eleven MCP tools. Proactive hooks. One `pip install`.
 
 [![PyPI version](https://img.shields.io/pypi/v/repowise?color=F59520&labelColor=0A0A0A)](https://pypi.org/project/repowise/)
 [![License: AGPL v3](https://img.shields.io/badge/license-AGPL--v3-F59520?labelColor=0A0A0A)](https://www.gnu.org/licenses/agpl-3.0)
@@ -98,7 +98,9 @@ repowise init        # builds all four intelligence layers (~25 min first time)
 repowise serve       # starts MCP server + local dashboard
 ```
 
-Add to your Claude Code config (optional, `repowise init` already initializes `.mcp.json` under the project root):
+That's it. `repowise init` automatically registers the MCP server, installs PreToolUse/PostToolUse hooks in `~/.claude/settings.json`, and generates `.mcp.json` at the project root.
+
+To manually add the MCP server to another editor:
 
 ```json
 {
@@ -213,6 +215,45 @@ This is what happens when an AI agent has real codebase intelligence.
 
 ---
 
+## Proactive context enrichment — hooks
+
+Most MCP tools are passive — the agent has to know to call them. repowise hooks are **active**. They inject graph context into every search automatically, so agents are smarter even when they don't explicitly ask for help.
+
+### PreToolUse — every search gets graph context
+
+When your AI agent runs `Grep` or `Glob`, repowise intercepts the call and enriches it with:
+
+- **Matching files** from the wiki's full-text search index
+- **Symbols** — functions, classes, and methods in those files
+- **Importers** — who depends on this file (callers)
+- **Dependencies** — what this file imports (callees)
+- **Git signals** — hotspot status, bus factor, primary owner
+
+Average latency: **24ms**. No LLM calls. No network. Pure local SQLite queries.
+
+```
+[repowise] 2 related file(s) found:
+
+  src/auth/middleware.ts
+    Symbols: class:AuthMiddleware, function:validateToken, function:refreshSession
+    Imported by: api/routes/index.ts, api/routes/payments.ts, api/routes/admin.ts
+    Depends on: auth/jwt.ts, db/sessions.ts, config/auth.ts
+    Git: HOTSPOT, bus-factor=1, owner=@alex
+```
+
+### PostToolUse — auto-detect stale wiki
+
+After a successful `git commit`, repowise checks whether the wiki is out of date and notifies the agent:
+
+```
+[repowise] Wiki is stale — last indexed at commit a1b2c3d4, HEAD is now f9a0499b.
+Run `repowise update` to refresh documentation and graph context.
+```
+
+Hooks are installed automatically during `repowise init`. No manual configuration needed.
+
+---
+
 ## Auto-generated CLAUDE.md
 
 After every `repowise init` and `repowise update`, repowise regenerates your `CLAUDE.md` from actual codebase intelligence — not a template. No LLM calls. Under 5 seconds.
@@ -319,6 +360,7 @@ When a senior engineer leaves, the "why" usually leaves with them. Decision inte
 | Bus factor analysis | ✅ | ❌ | ❌ | ❌ | ✅ |
 | Architectural decision records | ✅ | ❌ | ❌ | ❌ | ❌ |
 | MCP server for AI agents | ✅ 11 tools | ❌ | ✅ 3 tools | ✅ | ✅ |
+| Proactive agent hooks | ✅ PreToolUse + PostToolUse | ❌ | ❌ | ❌ | ❌ |
 | Auto-generated CLAUDE.md | ✅ | ❌ | ❌ | ❌ | ❌ |
 | Doc freshness scoring | ✅ | ❌ | ❌ | ⚠️ staleness only | ❌ |
 | Incremental updates on commit | ✅ <30s | ✅ | ❌ | ✅ | ✅ |
@@ -393,6 +435,9 @@ repowise decision health          # stale, conflicts, ungoverned hotspots
 
 # Editor files
 repowise generate-claude-md       # regenerate CLAUDE.md
+
+# Hooks (auto-installed by init — not meant to be called manually)
+repowise augment                  # enriches agent tool calls with graph context
 
 # Utilities
 repowise export [PATH]            # export wiki as markdown files

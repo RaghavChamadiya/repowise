@@ -24,9 +24,10 @@ Everything you need to know to install, use, and get the most out of repowise.
    - [doctor](#repowise-doctor)
 4. [Web UI](#web-ui)
 5. [MCP Integration with AI Editors](#mcp-integration-with-ai-editors)
-6. [Environment Variables](#environment-variables)
-7. [Common Workflows](#common-workflows)
-8. [Troubleshooting](#troubleshooting)
+6. [Proactive Context Enrichment (Hooks)](#proactive-context-enrichment-hooks)
+7. [Environment Variables](#environment-variables)
+8. [Common Workflows](#common-workflows)
+9. [Troubleshooting](#troubleshooting)
 
 ---
 
@@ -727,6 +728,86 @@ Once connected, your AI editor can:
 - Trace dependency paths between modules
 - Find dead code to clean up
 - Generate architecture diagrams
+
+---
+
+## Proactive Context Enrichment (Hooks)
+
+Repowise automatically enriches AI agent tool calls with codebase graph context via Claude Code hooks. This is installed automatically during `repowise init` — no manual configuration required.
+
+Unlike MCP tools (which agents must explicitly call), hooks fire on every search automatically. Every `Grep` or `Glob` an agent runs gets graph context injected alongside the results, without the agent having to think about it.
+
+### How it works
+
+#### PreToolUse Hook — Grep/Glob enrichment
+
+Whenever an AI agent runs `Grep` or `Glob`, repowise intercepts the call and queries the local `wiki.db` for each matching file. The enrichment is appended to the tool result before the agent sees it:
+
+| Field | What it tells the agent |
+|-------|------------------------|
+| **Symbols** | Functions, classes, and methods defined in the file |
+| **Imported by** | Which files depend on this file (reverse dependency) |
+| **Depends on** | What this file imports (forward dependency) |
+| **Git signals** | Hotspot status, bus factor, and owner |
+
+Average latency is ~24ms — well under the 500ms target. No LLM calls, no network requests — pure local SQLite queries against `wiki.db`.
+
+#### PostToolUse Hook — Git commit detection
+
+After a successful `git commit`, `git merge`, `git rebase`, `git cherry-pick`, or `git pull`, repowise checks whether the wiki is stale by comparing `HEAD` against the last indexed commit in `.repowise/state.json`. If the wiki is out of date, the agent is notified:
+
+```
+Wiki is stale — run `repowise update` to refresh
+```
+
+This ensures agents are never silently working from outdated documentation.
+
+### Configuration
+
+Hooks are written to `~/.claude/settings.json` automatically during `repowise init`. The installed configuration:
+
+| Hook type | Matcher | Action |
+|-----------|---------|--------|
+| `PreToolUse` | `Grep\|Glob` | Query `wiki.db` and prepend graph context to the result |
+| `PostToolUse` | `Bash` | Check for git operations and notify if wiki is stale |
+
+Both hooks call the `repowise augment` CLI command internally. Hooks are designed for graceful failure — any error results in a silent exit so a repowise issue never breaks the agent.
+
+### CLI command
+
+```bash
+repowise augment    # Not meant to be called manually — invoked by Claude Code hooks
+```
+
+### Sample enrichment output
+
+When an agent runs `Grep` or `Glob`, it sees its normal results followed by context like this:
+
+```
+[repowise] 2 related file(s) found:
+
+  packages/core/.../page_generator.py
+    Symbols: function:_now_iso, class:PageGenerator, method:__init__
+    Imported by: init_cmd.py, update_cmd.py, generation/__init__.py
+    Depends on: context_assembler.py, base.py, models.py
+    Git: HOTSPOT, bus-factor=1, owner=RaghavChamadiya
+
+  packages/cli/.../init_cmd.py
+    Symbols: function:_resolve_embedder, function:_register_mcp_with_claude
+    Imported by: reindex_cmd.py, search_cmd.py, main.py
+    Depends on: update_cmd.py, cost_estimator.py
+```
+
+This means an agent that searches for `"PageGenerator"` immediately knows which files depend on it, what it depends on, and that it is a hotspot — without making a separate MCP tool call.
+
+### Relationship to MCP tools
+
+Hooks and MCP tools are complementary:
+
+- **Hooks** — passive, automatic, zero agent effort. Fire on every search regardless of whether the agent is thinking about graph context.
+- **MCP tools** — active, on-demand, richer output. Used when the agent needs full documentation, risk assessment, architectural decisions, or dependency tracing.
+
+For most day-to-day coding tasks, hooks provide sufficient context automatically. MCP tools remain the right choice for deeper investigation.
 
 ---
 
