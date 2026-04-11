@@ -14,9 +14,11 @@ It also detects monorepo structure and returns a RepoStructure.
 
 from __future__ import annotations
 
+import configparser
 import os
 import threading
 from collections.abc import Iterator
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
@@ -31,6 +33,32 @@ from .models import (
     PackageInfo,
     RepoStructure,
 )
+
+
+# ---------------------------------------------------------------------------
+# Traversal statistics
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class TraversalStats:
+    """Counts collected during file traversal, broken down by skip reason."""
+
+    total_paths_walked: int = 0
+    included: int = 0
+    skipped_gitignore: int = 0
+    skipped_blocked_extension: int = 0
+    skipped_oversized: int = 0
+    skipped_binary: int = 0
+    skipped_generated: int = 0
+    skipped_extra_ignore: int = 0
+    skipped_extra_exclude: int = 0
+    skipped_blocked_pattern: int = 0
+    skipped_unknown_language: int = 0
+    skipped_dir_ignore: int = 0
+    skipped_submodule: int = 0
+    lang_counts: dict[str, int] = field(default_factory=dict)
+
 
 log = structlog.get_logger(__name__)
 
@@ -185,6 +213,8 @@ class FileTraverser:
             Defaults to ``.repowiseIgnore``.
         extra_exclude_patterns: Additional gitignore-style patterns to exclude
             (from CLI ``--exclude`` flags or ``repo.settings["exclude_patterns"]``).
+        include_submodules: When False (default), directories listed in
+            ``.gitmodules`` are skipped during traversal.
     """
 
     def __init__(
@@ -194,6 +224,7 @@ class FileTraverser:
         max_file_size_kb: int = 500,
         extra_ignore_filename: str = ".repowiseIgnore",
         extra_exclude_patterns: list[str] | None = None,
+        include_submodules: bool = False,
     ) -> None:
         self.repo_root = repo_root.resolve()
         self.max_file_size_bytes = max_file_size_kb * 1024
@@ -210,14 +241,17 @@ class FileTraverser:
         self._dir_ignore_cache: dict[str, pathspec.PathSpec] = {
             str(self.repo_root): self._extra_ignore,
         }
-        self._oversized_skip_count: int = 0
-        self._oversized_files: list[tuple[str, int]] = []  # (path, size_bytes)
+        self._submodule_paths: frozenset[str] = frozenset()
+        if not include_submodules:
+            self._submodule_paths = _parse_gitmodules(self.repo_root)
+        self.stats = TraversalStats()
         self._count_lock = threading.Lock()
         log.info(
             "FileTraverser initialised",
             repo_root=str(self.repo_root),
             max_file_size_kb=max_file_size_kb,
             extra_exclude_patterns=len(patterns),
+            submodules_skipped=len(self._submodule_paths),
         )
 
     # ------------------------------------------------------------------
@@ -229,6 +263,11 @@ class FileTraverser:
         for abs_path in self._walk():
             info = self._build_file_info(abs_path)
             if info is not None:
+                with self._count_lock:
+                    self.stats.included += 1
+                    self.stats.lang_counts[info.language] = (
+                        self.stats.lang_counts.get(info.language, 0) + 1
+                    )
                 yield info
 
     def get_repo_structure(self, files: list[FileInfo] | None = None) -> RepoStructure:
@@ -286,6 +325,7 @@ class FileTraverser:
             )
 
             for filename in sorted(filenames):
+                self.stats.total_paths_walked += 1
                 yield dirpath_obj / filename
 
     def _get_dir_ignore(self, dirpath: Path) -> pathspec.PathSpec:
@@ -309,6 +349,9 @@ class FileTraverser:
         if dirname in _BLOCKED_DIRS:
             return True
         rel_str = rel_path.as_posix()
+        if rel_str in self._submodule_paths:
+            self.stats.skipped_submodule += 1
+            return True
         if self._gitignore.match_file(rel_str + "/"):
             return True
         if self._extra_ignore.match_file(rel_str + "/"):
@@ -335,29 +378,40 @@ class FileTraverser:
         # Size limit
         if size_bytes > self.max_file_size_bytes:
             with self._count_lock:
-                self._oversized_skip_count += 1
-                self._oversized_files.append((rel_str, size_bytes))
+                self.stats.skipped_oversized += 1
             log.debug("Skipping oversized file", path=rel_str, size_kb=size_bytes // 1024)
             return None
 
         # Blocked extension
         if abs_path.suffix.lower() in _BLOCKED_EXTENSIONS:
+            with self._count_lock:
+                self.stats.skipped_blocked_extension += 1
             return None
 
         # gitignore / extra ignore / extra exclude patterns
         if self._gitignore.match_file(rel_str):
+            with self._count_lock:
+                self.stats.skipped_gitignore += 1
             return None
         if self._extra_ignore.match_file(rel_str):
+            with self._count_lock:
+                self.stats.skipped_extra_ignore += 1
             return None
         if self._extra_exclude.match_file(rel_str):
+            with self._count_lock:
+                self.stats.skipped_extra_exclude += 1
             return None
         # Per-directory .repowiseIgnore: check filename against the parent dir's spec.
         dir_ignore = self._get_dir_ignore(abs_path.parent)
         if dir_ignore.match_file(abs_path.name):
+            with self._count_lock:
+                self.stats.skipped_dir_ignore += 1
             return None
 
         # Blocklist filename patterns
         if self._blocked_patterns.match_file(rel_str):
+            with self._count_lock:
+                self.stats.skipped_blocked_pattern += 1
             return None
 
         # Language detection — name/extension lookup is free (no I/O).  Only
@@ -366,14 +420,20 @@ class FileTraverser:
         language = _language_from_name_or_ext(abs_path)
         if language is None:
             if _is_binary(abs_path):
+                with self._count_lock:
+                    self.stats.skipped_binary += 1
                 return None
             language = _detect_by_shebang(abs_path)
             if language == "unknown":
+                with self._count_lock:
+                    self.stats.skipped_unknown_language += 1
                 return None
 
         # Generated file detection: only meaningful for code files.  Skipping
         # for data/markup files avoids a 512-byte read per file with no benefit.
         if language not in _SKIP_GENERATED_CHECK and _is_generated(abs_path):
+            with self._count_lock:
+                self.stats.skipped_generated += 1
             log.debug("Skipping generated file", path=rel_str)
             return None
 
@@ -546,6 +606,26 @@ def _find_entry_points_in(directory: Path, repo_root: Path) -> list[str]:
     except OSError:
         pass
     return sorted(result)
+
+
+def _parse_gitmodules(repo_root: Path) -> frozenset[str]:
+    """Parse ``.gitmodules`` and return the set of submodule paths (POSIX-style, relative)."""
+    gitmodules = repo_root / ".gitmodules"
+    if not gitmodules.exists():
+        return frozenset()
+    try:
+        parser = configparser.ConfigParser()
+        parser.read(str(gitmodules), encoding="utf-8")
+        paths: set[str] = set()
+        for section in parser.sections():
+            path = parser.get(section, "path", fallback=None)
+            if path:
+                # Normalize to POSIX-style relative path
+                paths.add(path.strip().replace("\\", "/"))
+        return frozenset(paths)
+    except Exception:
+        log.warning("Failed to parse .gitmodules", path=str(gitmodules))
+        return frozenset()
 
 
 def _load_gitignore_spec(repo_root: Path) -> pathspec.PathSpec:

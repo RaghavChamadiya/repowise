@@ -24,7 +24,7 @@ from .models import (
     compute_content_hash,
 )
 from .parser import LANGUAGE_CONFIGS, ASTParser, LanguageConfig, parse_file
-from .traverser import FileTraverser
+from .traverser import FileTraverser, TraversalStats
 
 __all__ = [
     # Models
@@ -39,6 +39,7 @@ __all__ = [
     "FileInfo",
     # Traversal
     "FileTraverser",
+    "TraversalStats",
     # Graph
     "GraphBuilder",
     "Import",

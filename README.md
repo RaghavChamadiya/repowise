@@ -358,6 +358,9 @@ Hosted adds what only makes sense in a managed, multi-user environment:
 ```bash
 # Core
 repowise init [PATH]              # index codebase (one-time)
+repowise init --index-only        # graph + git + dead code, no LLM, no cost
+repowise init -x vendor/ -x proto/  # exclude patterns (gitignore syntax)
+repowise init --include-submodules   # include git submodule directories
 repowise update [PATH]            # incremental update (<30 seconds)
 repowise serve [PATH]             # MCP server + local dashboard
 repowise watch [PATH]             # auto-update on file save

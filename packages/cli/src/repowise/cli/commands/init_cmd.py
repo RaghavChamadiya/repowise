@@ -239,6 +239,12 @@ async def _persist_result(
     default=False,
     help="Skip generating CLAUDE.md. Saves 'editor_files.claude_md: false' to config.",
 )
+@click.option(
+    "--include-submodules",
+    is_flag=True,
+    default=False,
+    help="Include git submodule directories (excluded by default).",
+)
 def init_command(
     path: str | None,
     provider_name: str | None,
@@ -257,6 +263,7 @@ def init_command(
     commit_limit: int | None,
     follow_renames: bool,
     no_claude_md: bool,
+    include_submodules: bool,
 ) -> None:
     """Generate wiki documentation for a codebase.
 
@@ -426,6 +433,7 @@ def init_command(
                 skip_tests=skip_tests,
                 skip_infra=skip_infra,
                 exclude_patterns=exclude_patterns if exclude_patterns else None,
+                include_submodules=include_submodules,
                 generate_docs=False,
                 llm_client=llm_client,
                 concurrency=concurrency,
@@ -462,6 +470,13 @@ def init_command(
         table.add_section()
         table.add_row("[bold]Total[/bold]", f"[bold]{est.total_pages}[/bold]", "")
         console.print(table)
+
+        # Language breakdown
+        lang_dist = result.repo_structure.root_language_distribution
+        if lang_dist:
+            lang_items = sorted(lang_dist.items(), key=lambda x: -x[1])[:6]
+            lang_parts = [f"{lang} {pct:.0%}" for lang, pct in lang_items]
+            console.print(f"  Languages: {', '.join(lang_parts)}")
 
         console.print(
             f"  Estimated tokens: ~{est.estimated_input_tokens + est.estimated_output_tokens:,} "
@@ -624,6 +639,7 @@ def init_command(
 
     # ---- State + config (full mode only) ----
     if not index_only and provider:
+
         async def _count_db_pages() -> int:
             from sqlalchemy import func as sa_func
             from sqlalchemy import select as sa_select
@@ -687,11 +703,21 @@ def init_command(
     )
     _n_decisions = sum(result.decision_report.by_source.values()) if result.decision_report else 0
 
+    # Build a compact language summary for the completion panel
+    _lang_dist = result.repo_structure.root_language_distribution
+    if _lang_dist:
+        _top = sorted(_lang_dist.items(), key=lambda x: -x[1])[:4]
+        _lang_summary = ", ".join(f"{lang} {pct:.0%}" for lang, pct in _top)
+        if len(_lang_dist) > 4:
+            _lang_summary += f" +{len(_lang_dist) - 4} more"
+    else:
+        _lang_summary = str(len(result.languages))
+
     if index_only:
         metrics: list[tuple[str, str]] = [
             ("Files indexed", str(result.file_count)),
             ("Symbols", f"{result.symbol_count:,}"),
-            ("Languages", str(len(result.languages))),
+            ("Languages", _lang_summary),
             ("Elapsed", format_elapsed(elapsed)),
             ("", ""),
             (

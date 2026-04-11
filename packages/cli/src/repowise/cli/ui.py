@@ -407,9 +407,16 @@ def interactive_advanced_config(console: Console) -> dict[str, Any]:
     )
 
     # --- exclude patterns ---
-    console.print("  [dim]Exclude patterns (gitignore-style, comma-separated, or empty):[/dim]")
-    raw = click.prompt("  Exclude", default="", show_default=False)
-    patterns = [p.strip() for p in raw.split(",") if p.strip()]
+    console.print(
+        "  [dim]Exclude patterns (gitignore-style). Enter one per line, empty line to finish:[/dim]"
+    )
+    patterns: list[str] = []
+    while True:
+        raw = click.prompt("  Exclude pattern", default="", show_default=False)
+        raw = raw.strip()
+        if not raw:
+            break
+        patterns.append(raw)
     result["exclude"] = tuple(patterns)
 
     # --- test run ---
@@ -535,7 +542,7 @@ def format_elapsed(seconds: float) -> str:
 # ---------------------------------------------------------------------------
 
 _PHASE_LABELS: dict[str, str] = {
-    "traverse": "Traversing files...",
+    "traverse": "Scanning & filtering files...",
     "parse": "Parsing files...",
     "graph": "Building dependency graph...",
     "git": "Indexing file history...",
@@ -569,9 +576,7 @@ class RichProgressCallback:
         if phase in self._tasks:
             self._progress.update(self._tasks[phase], total=total, visible=True)
         else:
-            self._tasks[phase] = self._progress.add_task(
-                label, total=total, visible=True, cost=0.0
-            )
+            self._tasks[phase] = self._progress.add_task(label, total=total, visible=True, cost=0.0)
 
     def on_item_done(self, phase: str) -> None:
         if phase in self._tasks:

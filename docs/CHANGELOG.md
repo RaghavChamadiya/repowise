@@ -9,6 +9,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.2.2] — 2026-04-11
+
+### Added
+- **Traversal stats** — `FileTraverser` now tracks skip reasons (`.gitignore`, blocked extension, binary, oversized, generated, `--exclude`, `.repowiseIgnore`, unknown language) via a new `TraversalStats` dataclass. Stats are surfaced after traversal as a filtering summary showing how many files were included vs excluded and why.
+- **Submodule handling** — git submodule directories (parsed from `.gitmodules`) are now excluded by default during traversal. Added `--include-submodules` flag to `repowise init` to opt in.
+- **Language breakdown** — generation plan table now shows language distribution (e.g. "Languages: python 79%, typescript 14%"). Completion panel shows top languages with percentages instead of just a count.
+- **Multi-line exclude input** — interactive advanced mode now prompts for exclude patterns one per line instead of comma-separated on a single line.
+- 10 new unit tests covering `TraversalStats` counters, language counts, and submodule handling.
+
+### Changed
+- Traverse progress bar uses spinner mode instead of showing misleading pre-filter totals (e.g. "2132/83601").
+- Traverse phase label changed from "Traversing files..." to "Scanning & filtering files...".
+
+### Docs
+- Updated README CLI reference with `--index-only`, `-x`, and `--include-submodules` examples.
+- Updated website docs (`cli-reference.md`, `configuration.md`, `getting-started.md`) with submodule handling, `.gitignore` documentation, and new output examples.
+- Reorganized `docs/` directory: architecture docs into `docs/architecture/`, internals into `docs/internals/`.
+- Removed stale one-time documents (PHASE_5_5_IMPLEMENTATION, GIT_INTELLIGENCE_AUDIT, MCP_AND_STATE_REVIEW, MCP_TOOLS_TEST_REPORT).
+
+---
+
 ## [0.2.1] — 2026-04-10
 
 ### Added
