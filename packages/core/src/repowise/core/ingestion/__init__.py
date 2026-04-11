@@ -17,6 +17,7 @@ from .models import (
     CallSite,
     EdgeType,
     FileInfo,
+    HeritageRelation,
     Import,
     NamedBinding,
     PackageInfo,
@@ -35,6 +36,7 @@ __all__ = [
     "CallSite",
     "EdgeType",
     "EXTENSION_TO_LANGUAGE",
+    "HeritageRelation",
     "NamedBinding",
     "LANGUAGE_CONFIGS",
     # Parsing

@@ -233,7 +233,10 @@ class GraphBuilder:
                         )
             import_targets[path] = file_imports
 
-        # --- Phase 2: Resolve symbol-level calls ---
+        # --- Phase 2: Resolve heritage (extends/implements) ---
+        self._resolve_heritage(import_targets)
+
+        # --- Phase 3: Resolve symbol-level calls ---
         self._resolve_calls(import_targets)
 
         self._built = True
@@ -259,6 +262,35 @@ class GraphBuilder:
             edge_types=edge_counts,
         )
         return self._graph
+
+    def _resolve_heritage(self, import_targets: dict[str, set[str]]) -> None:
+        """Resolve heritage relations and add EXTENDS/IMPLEMENTS edges."""
+        from .heritage_resolver import HeritageResolver
+
+        resolver = HeritageResolver(self._parsed_files, import_targets)
+        total_resolved = 0
+
+        for path, parsed in self._parsed_files.items():
+            if not parsed.heritage:
+                continue
+
+            resolved = resolver.resolve_file(path, parsed.heritage)
+            for rh in resolved:
+                if rh.child_id in self._graph and rh.parent_id in self._graph:
+                    if not self._graph.has_edge(rh.child_id, rh.parent_id):
+                        self._graph.add_edge(
+                            rh.child_id,
+                            rh.parent_id,
+                            edge_type=rh.edge_type,
+                            confidence=rh.confidence,
+                        )
+                        total_resolved += 1
+                    else:
+                        existing = self._graph[rh.child_id][rh.parent_id]
+                        if rh.confidence > existing.get("confidence", 0):
+                            existing["confidence"] = rh.confidence
+
+        log.info("Heritage edges resolved", total=total_resolved)
 
     def _resolve_calls(self, import_targets: dict[str, set[str]]) -> None:
         """Run three-tier call resolution and add CALLS edges to the graph."""

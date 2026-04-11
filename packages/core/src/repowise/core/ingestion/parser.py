@@ -31,7 +31,15 @@ from pathlib import Path
 import structlog
 from tree_sitter import Language, Node, Parser
 
-from .models import CallSite, FileInfo, Import, NamedBinding, ParsedFile, Symbol
+from .models import (
+    CallSite,
+    FileInfo,
+    HeritageRelation,
+    Import,
+    NamedBinding,
+    ParsedFile,
+    Symbol,
+)
 
 log = structlog.get_logger(__name__)
 
@@ -399,6 +407,7 @@ class ASTParser:
         symbols = self._extract_symbols(tree, query, config, file_info, src)
         imports = self._extract_imports(tree, query, config, file_info, src)
         calls = self._extract_calls(tree, query, config, file_info, src, symbols)
+        heritage = _extract_heritage(tree, query, config, file_info, src)
         exports = self._derive_exports(symbols, config, src)
         docstring = _extract_module_docstring(root, src, lang)
 
@@ -408,6 +417,7 @@ class ASTParser:
             imports=imports,
             exports=exports,
             calls=calls,
+            heritage=heritage,
             docstring=docstring,
             parse_errors=parse_errors,
         )
@@ -1256,6 +1266,361 @@ def _extract_java_bindings(
                 NamedBinding(local_name="*", exported_name=None, source_file=None)
             ]
     return [], []
+
+
+# ---------------------------------------------------------------------------
+# Heritage (inheritance / interface implementation) extraction
+# ---------------------------------------------------------------------------
+
+# Maps language → set of node types that can have heritage info
+_HERITAGE_NODE_TYPES: dict[str, frozenset[str]] = {
+    "python": frozenset({"class_definition"}),
+    "typescript": frozenset({"class_declaration", "abstract_class_declaration", "interface_declaration"}),
+    "javascript": frozenset({"class_declaration"}),
+    "java": frozenset({"class_declaration", "interface_declaration", "enum_declaration"}),
+    "go": frozenset({"type_spec"}),
+    "rust": frozenset({"impl_item", "trait_item"}),
+    "cpp": frozenset({"class_specifier", "struct_specifier"}),
+    "c": frozenset(),
+    "kotlin": frozenset({"class_declaration", "object_declaration"}),
+    "ruby": frozenset({"class"}),
+    "csharp": frozenset({"class_declaration", "interface_declaration", "struct_declaration"}),
+}
+
+
+def _extract_heritage(
+    tree: object,
+    query: object,
+    config: "LanguageConfig",
+    file_info: "FileInfo",
+    src: str,
+) -> list[HeritageRelation]:
+    """Extract inheritance/implementation relationships from class definitions.
+
+    Walks the same @symbol.def captures used by _extract_symbols, extracting
+    superclass/interface/trait information from the definition AST nodes.
+    """
+    if query is None:
+        return []
+
+    lang = file_info.language
+    heritage_types = _HERITAGE_NODE_TYPES.get(lang, frozenset())
+    if not heritage_types:
+        return []
+
+    relations: list[HeritageRelation] = []
+    seen: set[tuple[int, str]] = set()
+
+    for capture_dict in _run_query(query, tree.root_node):  # type: ignore[attr-defined]
+        def_nodes = capture_dict.get("symbol.def", [])
+        name_nodes = capture_dict.get("symbol.name", [])
+
+        if not def_nodes or not name_nodes:
+            continue
+
+        def_node = def_nodes[0]
+        if def_node.type not in heritage_types:
+            continue
+
+        name = _node_text(name_nodes[0], src)
+        if not name:
+            continue
+
+        line = def_node.start_point[0] + 1
+        dedup_key = (line, name)
+        if dedup_key in seen:
+            continue
+        seen.add(dedup_key)
+
+        extractor = _HERITAGE_EXTRACTORS.get(lang)
+        if extractor:
+            extractor(def_node, name, line, src, relations)
+
+    return relations
+
+
+def _extract_python_heritage(
+    def_node: Node, name: str, line: int, src: str, out: list[HeritageRelation]
+) -> None:
+    """Python: class Foo(Bar, Baz, metaclass=Meta)."""
+    superclasses = def_node.child_by_field_name("superclasses")
+    if superclasses is None:
+        # Also check for argument_list child (some grammar versions)
+        for child in def_node.children:
+            if child.type == "argument_list":
+                superclasses = child
+                break
+    if superclasses is None:
+        return
+
+    for child in superclasses.children:
+        if child.type in ("(", ")", ","):
+            continue
+        # Skip keyword arguments like metaclass=Meta
+        if child.type == "keyword_argument":
+            continue
+        parent = _node_text(child, src).strip()
+        if parent:
+            # Strip module prefix for qualified names (e.g., abc.ABC → ABC)
+            bare = parent.split(".")[-1]
+            out.append(HeritageRelation(
+                child_name=name, parent_name=bare, kind="extends", line=line
+            ))
+
+
+def _extract_ts_js_heritage(
+    def_node: Node, name: str, line: int, src: str, out: list[HeritageRelation]
+) -> None:
+    """TypeScript/JavaScript: class Foo extends Bar implements IFoo, IBar."""
+    for child in def_node.children:
+        if child.type == "class_heritage":
+            for clause in child.children:
+                if clause.type == "extends_clause":
+                    for type_node in clause.children:
+                        if type_node.type in ("extends", ","):
+                            continue
+                        parent = _node_text(type_node, src).strip()
+                        if parent:
+                            out.append(HeritageRelation(
+                                child_name=name, parent_name=parent,
+                                kind="extends", line=line,
+                            ))
+                elif clause.type == "implements_clause":
+                    for type_node in clause.children:
+                        if type_node.type in ("implements", ","):
+                            continue
+                        parent = _node_text(type_node, src).strip()
+                        if parent:
+                            out.append(HeritageRelation(
+                                child_name=name, parent_name=parent,
+                                kind="implements", line=line,
+                            ))
+        # interface extends: interface Foo extends Bar
+        if child.type == "extends_type_clause":
+            for type_node in child.children:
+                if type_node.type in ("extends", ","):
+                    continue
+                parent = _node_text(type_node, src).strip()
+                if parent:
+                    out.append(HeritageRelation(
+                        child_name=name, parent_name=parent,
+                        kind="extends", line=line,
+                    ))
+
+
+def _extract_java_heritage(
+    def_node: Node, name: str, line: int, src: str, out: list[HeritageRelation]
+) -> None:
+    """Java: class Foo extends Bar implements IFoo, IBar."""
+    superclass = def_node.child_by_field_name("superclass")
+    if superclass:
+        parent = _node_text(superclass, src).strip()
+        # Strip 'extends' keyword if captured
+        parent = parent.removeprefix("extends").strip()
+        if parent:
+            out.append(HeritageRelation(
+                child_name=name, parent_name=parent.split(".")[-1],
+                kind="extends", line=line,
+            ))
+
+    interfaces = def_node.child_by_field_name("interfaces")
+    if interfaces:
+        for child in interfaces.children:
+            if child.type in ("implements", "extends", ",", "type_list"):
+                if child.type == "type_list":
+                    for type_node in child.children:
+                        if type_node.type != ",":
+                            parent = _node_text(type_node, src).strip().split(".")[-1]
+                            if parent:
+                                kind = "implements" if def_node.type == "class_declaration" else "extends"
+                                out.append(HeritageRelation(
+                                    child_name=name, parent_name=parent,
+                                    kind=kind, line=line,
+                                ))
+                continue
+            parent = _node_text(child, src).strip().split(".")[-1]
+            if parent and parent not in ("implements", "extends"):
+                kind = "implements" if def_node.type == "class_declaration" else "extends"
+                out.append(HeritageRelation(
+                    child_name=name, parent_name=parent, kind=kind, line=line,
+                ))
+
+
+def _extract_go_heritage(
+    def_node: Node, name: str, line: int, src: str, out: list[HeritageRelation]
+) -> None:
+    """Go: struct embedding (type Foo struct { Bar; baz.Qux })."""
+    # type_spec → type field is the body (struct_type or interface_type)
+    type_node = def_node.child_by_field_name("type")
+    if type_node is None:
+        return
+
+    if type_node.type == "struct_type":
+        body = type_node.child_by_field_name("body") or type_node
+        if body is None:
+            return
+        for field_decl in body.children:
+            if field_decl.type != "field_declaration":
+                continue
+            # Embedded field: no name, just a type
+            name_node = field_decl.child_by_field_name("name")
+            type_child = field_decl.child_by_field_name("type")
+            if name_node is None and type_child is not None:
+                # This is an embedded field
+                parent = _node_text(type_child, src).strip().lstrip("*")
+                bare = parent.split(".")[-1]
+                if bare:
+                    out.append(HeritageRelation(
+                        child_name=name, parent_name=bare,
+                        kind="mixin", line=line,
+                    ))
+
+    elif type_node.type == "interface_type":
+        # Interface embedding: interface { io.Reader }
+        for child in type_node.children:
+            if child.type in ("{", "}", "\n"):
+                continue
+            # Embedded interfaces appear as type names without method signatures
+            if child.type in ("type_identifier", "qualified_type"):
+                parent = _node_text(child, src).strip()
+                bare = parent.split(".")[-1]
+                if bare:
+                    out.append(HeritageRelation(
+                        child_name=name, parent_name=bare,
+                        kind="extends", line=line,
+                    ))
+
+
+def _extract_rust_heritage(
+    def_node: Node, name: str, line: int, src: str, out: list[HeritageRelation]
+) -> None:
+    """Rust: impl Trait for Type, trait Foo: Bar + Baz."""
+    if def_node.type == "impl_item":
+        # Check for 'impl Trait for Type' pattern
+        trait_node = def_node.child_by_field_name("trait")
+        type_node = def_node.child_by_field_name("type")
+        if trait_node and type_node:
+            trait_name = _node_text(trait_node, src).strip().rsplit("::", 1)[-1]
+            type_name = _node_text(type_node, src).strip()
+            if trait_name and type_name:
+                out.append(HeritageRelation(
+                    child_name=type_name, parent_name=trait_name,
+                    kind="trait_impl", line=line,
+                ))
+
+    elif def_node.type == "trait_item":
+        # trait Foo: Bar + Baz (supertrait bounds)
+        bounds = def_node.child_by_field_name("bounds")
+        if bounds:
+            for child in bounds.children:
+                if child.type in ("+", ":"):
+                    continue
+                parent = _node_text(child, src).strip().rsplit("::", 1)[-1]
+                if parent:
+                    out.append(HeritageRelation(
+                        child_name=name, parent_name=parent,
+                        kind="extends", line=line,
+                    ))
+
+
+def _extract_cpp_heritage(
+    def_node: Node, name: str, line: int, src: str, out: list[HeritageRelation]
+) -> None:
+    """C++: class Foo : public Bar, protected Baz."""
+    for child in def_node.children:
+        if child.type == "base_class_clause":
+            for base in child.children:
+                if base.type in (":", ","):
+                    continue
+                # base_class_clause children may include access specifiers
+                text = _node_text(base, src).strip()
+                # Strip access specifier (public/protected/private/virtual)
+                for prefix in ("public", "protected", "private", "virtual"):
+                    text = text.removeprefix(prefix).strip()
+                bare = text.split("::")[-1].strip()
+                if bare:
+                    out.append(HeritageRelation(
+                        child_name=name, parent_name=bare,
+                        kind="extends", line=line,
+                    ))
+
+
+def _extract_kotlin_heritage(
+    def_node: Node, name: str, line: int, src: str, out: list[HeritageRelation]
+) -> None:
+    """Kotlin: class Foo : Bar(), IFoo."""
+    for child in def_node.children:
+        if child.type == "delegation_specifier":
+            for delegate in child.children:
+                text = _node_text(delegate, src).strip()
+                # Remove constructor call parens
+                bare = text.split("(")[0].split(".")[-1].strip()
+                if bare and bare != name:
+                    out.append(HeritageRelation(
+                        child_name=name, parent_name=bare,
+                        kind="extends", line=line,
+                    ))
+        elif child.type == "delegation_specifiers":
+            for delegate in child.children:
+                if delegate.type in (":", ","):
+                    continue
+                text = _node_text(delegate, src).strip()
+                bare = text.split("(")[0].split(".")[-1].strip()
+                if bare and bare != name:
+                    out.append(HeritageRelation(
+                        child_name=name, parent_name=bare,
+                        kind="extends", line=line,
+                    ))
+
+
+def _extract_ruby_heritage(
+    def_node: Node, name: str, line: int, src: str, out: list[HeritageRelation]
+) -> None:
+    """Ruby: class Foo < Bar."""
+    superclass = def_node.child_by_field_name("superclass")
+    if superclass:
+        parent = _node_text(superclass, src).strip()
+        # Strip the '<' if it was captured
+        parent = parent.removeprefix("<").strip()
+        bare = parent.split("::")[-1]
+        if bare:
+            out.append(HeritageRelation(
+                child_name=name, parent_name=bare, kind="extends", line=line,
+            ))
+
+
+def _extract_csharp_heritage(
+    def_node: Node, name: str, line: int, src: str, out: list[HeritageRelation]
+) -> None:
+    """C#: class Foo : Bar, IFoo."""
+    for child in def_node.children:
+        if child.type == "base_list":
+            for base in child.children:
+                if base.type in (":", ","):
+                    continue
+                text = _node_text(base, src).strip()
+                bare = text.split(".")[-1].split("<")[0].strip()
+                if bare and bare != name:
+                    # Convention: interfaces start with I
+                    kind = "implements" if bare.startswith("I") and len(bare) > 1 and bare[1].isupper() else "extends"
+                    out.append(HeritageRelation(
+                        child_name=name, parent_name=bare, kind=kind, line=line,
+                    ))
+
+
+_HERITAGE_EXTRACTORS: dict[str, Callable[..., None]] = {
+    "python": _extract_python_heritage,
+    "typescript": _extract_ts_js_heritage,
+    "javascript": _extract_ts_js_heritage,
+    "java": _extract_java_heritage,
+    "go": _extract_go_heritage,
+    "rust": _extract_rust_heritage,
+    "cpp": _extract_cpp_heritage,
+    "c": lambda *_: None,
+    "kotlin": _extract_kotlin_heritage,
+    "ruby": _extract_ruby_heritage,
+    "csharp": _extract_csharp_heritage,
+}
 
 
 def _extract_go_receiver_type(receiver_text: str) -> str | None:
