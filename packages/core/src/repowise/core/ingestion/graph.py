@@ -220,9 +220,22 @@ class GraphBuilder:
         if g.number_of_nodes() == 0:
             return {}
         try:
-            communities = nx.community.louvain_communities(g.to_undirected(), seed=42)
+            # Build an undirected graph with nodes AND edges in deterministic
+            # (sorted) order so that Louvain's adjacency traversal is reproducible
+            # across runs regardless of the order files were parsed (parallel I/O
+            # via ProcessPoolExecutor + as_completed → non-deterministic insertion
+            # order in the main graph).
+            g_und = g.to_undirected()
+            g_stable = nx.Graph()
+            g_stable.add_nodes_from(sorted(g_und.nodes()))
+            for u, v in sorted((min(a, b), max(a, b)) for a, b in g_und.edges()):
+                g_stable.add_edge(u, v)
+            communities = nx.community.louvain_communities(g_stable, seed=42)
+            # Also sort the returned community list by each community's smallest
+            # member so that the integer IDs assigned via enumerate() are stable.
+            sorted_communities = sorted(communities, key=lambda c: min(c, default=""))
             result: dict[str, int] = {}
-            for community_id, members in enumerate(communities):
+            for community_id, members in enumerate(sorted_communities):
                 for node in members:
                     result[node] = community_id
             return result

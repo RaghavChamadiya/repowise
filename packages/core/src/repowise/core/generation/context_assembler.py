@@ -277,9 +277,10 @@ class ContextAssembler:
         else:
             import_list = []
 
-        # Graph edges
-        in_edges = list(graph.predecessors(path)) if path in graph else []
-        out_edges = list(graph.successors(path)) if path in graph else []
+        # Graph edges — sorted for deterministic prompt hashes across runs
+        # (graph node insertion order is non-deterministic due to parallel parsing)
+        in_edges = sorted(graph.predecessors(path)) if path in graph else []
+        out_edges = sorted(graph.successors(path)) if path in graph else []
         # Filter out external nodes
         in_edges = [e for e in in_edges if not e.startswith("external:")]
         out_edges = [e for e in out_edges if not e.startswith("external:")]
