@@ -44,8 +44,12 @@ def _resolve_embedder(embedder_flag: str | None) -> str:
 
 
 def _register_mcp_with_claude(console_obj: Any, repo_path: Path) -> None:
-    """Register the repowise MCP server with Claude Desktop and Claude Code."""
-    from repowise.cli.mcp_config import register_with_claude_code, register_with_claude_desktop
+    """Register the repowise MCP server and hooks with Claude Desktop and Claude Code."""
+    from repowise.cli.mcp_config import (
+        install_claude_code_hooks,
+        register_with_claude_code,
+        register_with_claude_desktop,
+    )
 
     desktop = register_with_claude_desktop(repo_path)
     if desktop:
@@ -54,6 +58,12 @@ def _register_mcp_with_claude(console_obj: Any, repo_path: Path) -> None:
     code = register_with_claude_code(repo_path)
     if code:
         console_obj.print(f"  [green]✓[/green] Claude Code MCP registered ({code})")
+
+    hooks = install_claude_code_hooks()
+    if hooks:
+        console_obj.print(
+            f"  [green]✓[/green] Claude Code hooks registered (PreToolUse + PostToolUse)"
+        )
 
 
 def _maybe_generate_claude_md(
