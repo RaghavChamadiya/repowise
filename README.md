@@ -65,7 +65,7 @@ There's a small genre of "token efficiency" benchmarks going around. It would be
 repowise runs once, builds everything, then keeps it in sync on every commit.
 
 ### ◈ Graph Intelligence
-tree-sitter parses every file into symbols. NetworkX builds a dependency graph — files, classes, functions, imports, inheritance, and call relationships. PageRank identifies your most central code. Community detection finds logical modules even when your directory structure doesn't reflect them.
+tree-sitter parses every file into symbols. NetworkX builds a two-tier dependency graph — file nodes for module-level relationships and symbol nodes (functions, classes, methods) for fine-grained call resolution. A 3-tier resolver links call sites to their targets with confidence scoring. Import aliases, barrel re-exports, and namespace imports all resolve correctly. PageRank identifies your most central code. Community detection finds logical modules even when your directory structure doesn't reflect them.
 
 ### ◈ Git Intelligence
 500 commits of history turned into signals: hotspot files (high churn × high complexity), ownership percentages per engineer, co-change pairs (files that change together without an import link — hidden coupling), and significant commit messages that explain *why* code evolved.

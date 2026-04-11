@@ -217,6 +217,7 @@ class GraphBuilder:
                     imp.module_path, path, path_set, stem_map, parsed.file_info.language
                 )
                 if target:
+                    imp.resolved_file = target
                     file_imports.add(target)
                     # Aggregate imported_names on parallel edges
                     if self._graph.has_edge(path, target):
