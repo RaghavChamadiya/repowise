@@ -36,11 +36,8 @@ from repowise.core.providers.llm.base import (
     RateLimitError,
 )
 
-from typing import TYPE_CHECKING, Any, AsyncIterator
+from typing import Any, AsyncIterator
 from repowise.core.rate_limiter import RateLimiter
-
-if TYPE_CHECKING:
-    from repowise.core.generation.cost_tracker import CostTracker
 
 log = structlog.get_logger(__name__)
 
@@ -56,12 +53,16 @@ class OpenRouterProvider(BaseProvider):
 
     Args:
         api_key:      OpenRouter API key. Falls back to OPENROUTER_API_KEY env var.
-        model:        Model identifier (vendor/model format). Defaults to anthropic/claude-sonnet-4.
+        model:        Model identifier (vendor/model format). Defaults to anthropic/claude-sonnet-4.6.
         base_url:     Override the OpenRouter API URL (rarely needed).
         rate_limiter: Optional RateLimiter instance.
-        cost_tracker: Optional CostTracker instance.
         http_referer: Optional site URL for OpenRouter rankings/leaderboards.
         app_title:    App name shown on OpenRouter dashboard. Defaults to "repowise".
+
+    Note:
+        Cost tracking is not supported for OpenRouter. It proxies 200+ models
+        with varying prices, and repowise's fallback pricing would show inflated
+        numbers. Check the OpenRouter dashboard for actual costs.
     """
 
     def __init__(
@@ -70,9 +71,9 @@ class OpenRouterProvider(BaseProvider):
         model: str = "anthropic/claude-sonnet-4.6",
         base_url: str = "https://openrouter.ai/api/v1",
         rate_limiter: RateLimiter | None = None,
-        cost_tracker: "CostTracker | None" = None,
         http_referer: str | None = None,
         app_title: str = "repowise",
+        **_kwargs: Any,
     ) -> None:
         resolved_key = api_key or os.environ.get("OPENROUTER_API_KEY")
         if not resolved_key:
@@ -94,10 +95,6 @@ class OpenRouterProvider(BaseProvider):
         )
         self._model = model
         self._rate_limiter = rate_limiter
-        # Cost tracking disabled: OpenRouter proxies 200+ models with varying
-        # prices. The fallback pricing in cost_tracker would show inflated
-        # numbers. Users should check the OpenRouter dashboard for actual costs.
-        self._cost_tracker = None
 
     @property
     def provider_name(self) -> str:
@@ -188,22 +185,6 @@ class OpenRouterProvider(BaseProvider):
             output_tokens=result.output_tokens,
             request_id=request_id,
         )
-
-        if self._cost_tracker is not None:
-            import asyncio
-
-            try:
-                asyncio.get_event_loop().create_task(
-                    self._cost_tracker.record(
-                        model=self._model,
-                        input_tokens=result.input_tokens,
-                        output_tokens=result.output_tokens,
-                        operation="doc_generation",
-                        file_path=None,
-                    )
-                )
-            except RuntimeError:
-                pass  # No running event loop — skip async record
 
         return result
 
