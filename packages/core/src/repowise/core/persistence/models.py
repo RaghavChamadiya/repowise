@@ -165,6 +165,7 @@ class GraphNode(Base):
     pagerank: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
     betweenness: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
     community_id: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    community_meta_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
     # Symbol-level fields (null for file nodes)
     kind: Mapped[str | None] = mapped_column(String(32), nullable=True)
     name: Mapped[str | None] = mapped_column(String(255), nullable=True)
