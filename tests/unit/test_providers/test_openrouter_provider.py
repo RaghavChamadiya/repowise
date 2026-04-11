@@ -174,3 +174,132 @@ async def test_api_status_error():
         provider._client = mock_client.return_value
         with pytest.raises(ProviderError):
             await provider.generate("sys", "user")
+
+
+# ---------------------------------------------------------------------------
+# stream_chat
+# ---------------------------------------------------------------------------
+
+
+def _make_stream_chunk(
+    content: str | None = None,
+    finish_reason: str | None = None,
+    tool_calls: list | None = None,
+) -> MagicMock:
+    """Build a single streaming chunk matching the OpenAI SDK shape."""
+    delta = MagicMock()
+    delta.content = content
+    delta.tool_calls = tool_calls
+
+    choice = MagicMock()
+    choice.delta = delta
+    choice.finish_reason = finish_reason
+
+    chunk = MagicMock()
+    chunk.choices = [choice]
+    chunk.usage = None
+    return chunk
+
+
+async def _collect_events(async_iter):
+    """Collect all events from an async iterator."""
+    events = []
+    async for event in async_iter:
+        events.append(event)
+    return events
+
+
+async def test_stream_chat_text_deltas():
+    provider = OpenRouterProvider(api_key="sk-or-test")
+
+    chunks = [
+        _make_stream_chunk(content="Hello"),
+        _make_stream_chunk(content=" world"),
+        _make_stream_chunk(finish_reason="stop"),
+    ]
+
+    async def fake_stream():
+        for c in chunks:
+            yield c
+
+    with patch("openai.AsyncOpenAI") as mock_client:
+        mock_client.return_value.chat.completions.create = AsyncMock(return_value=fake_stream())
+        provider._client = mock_client.return_value
+        events = await _collect_events(
+            provider.stream_chat(
+                messages=[{"role": "user", "content": "hi"}],
+                tools=[],
+                system_prompt="sys",
+            )
+        )
+
+    text_events = [e for e in events if e.type == "text_delta"]
+    assert len(text_events) == 2
+    assert text_events[0].text == "Hello"
+    assert text_events[1].text == " world"
+
+    stop_events = [e for e in events if e.type == "stop"]
+    assert len(stop_events) == 1
+    assert stop_events[0].stop_reason == "end_turn"
+
+
+async def test_stream_chat_tool_calls():
+    provider = OpenRouterProvider(api_key="sk-or-test")
+
+    tc_delta = MagicMock()
+    tc_delta.index = 0
+    tc_delta.id = "call_123"
+    tc_delta.function = MagicMock()
+    tc_delta.function.name = "search"
+    tc_delta.function.arguments = '{"query": "test"}'
+
+    chunks = [
+        _make_stream_chunk(tool_calls=[tc_delta]),
+        _make_stream_chunk(finish_reason="tool_calls"),
+    ]
+
+    async def fake_stream():
+        for c in chunks:
+            yield c
+
+    with patch("openai.AsyncOpenAI") as mock_client:
+        mock_client.return_value.chat.completions.create = AsyncMock(return_value=fake_stream())
+        provider._client = mock_client.return_value
+        events = await _collect_events(
+            provider.stream_chat(
+                messages=[{"role": "user", "content": "search for test"}],
+                tools=[{"type": "function", "function": {"name": "search"}}],
+                system_prompt="sys",
+            )
+        )
+
+    tool_events = [e for e in events if e.type == "tool_start"]
+    assert len(tool_events) == 1
+    assert tool_events[0].tool_call.name == "search"
+    assert tool_events[0].tool_call.arguments == {"query": "test"}
+
+    stop_events = [e for e in events if e.type == "stop"]
+    assert len(stop_events) == 1
+    assert stop_events[0].stop_reason == "tool_use"
+
+
+async def test_stream_chat_rate_limit_error():
+    from openai import RateLimitError as _OpenAIRateLimitError
+
+    provider = OpenRouterProvider(api_key="sk-or-test")
+
+    with patch("openai.AsyncOpenAI") as mock_client:
+        mock_client.return_value.chat.completions.create = AsyncMock(
+            side_effect=_OpenAIRateLimitError(
+                "rate limit", response=MagicMock(status_code=429), body={}
+            )
+        )
+        provider._client = mock_client.return_value
+        with pytest.raises(RateLimitError):
+            await _collect_events(
+                provider.stream_chat(
+                    messages=[{"role": "user", "content": "hi"}],
+                    tools=[],
+                    system_prompt="sys",
+                )
+            )
