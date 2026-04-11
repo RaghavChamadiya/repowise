@@ -27,7 +27,7 @@ from dataclasses import dataclass
 
 import structlog
 
-from .models import CallSite, ParsedFile
+from .models import CallSite, NamedBinding, ParsedFile
 
 log = structlog.get_logger(__name__)
 
@@ -70,10 +70,34 @@ class CallResolver:
         # Import graph: {file_path: set of imported file paths}
         self._import_targets = import_targets
 
-        # Import name mapping: {file_path: {imported_name: source_file}}
+        # Import name mapping: {file_path: {local_name: source_file}}
         self._import_names: dict[str, dict[str, str]] = defaultdict(dict)
 
+        # Full binding data: {file_path: {local_name: NamedBinding}}
+        self._import_bindings: dict[str, dict[str, NamedBinding]] = defaultdict(dict)
+
+        # Module alias mapping: {file_path: {alias: source_file}}
+        self._module_aliases: dict[str, dict[str, str]] = defaultdict(dict)
+
+        # Barrel re-export origins: {barrel_file: {name: origin_file}}
+        self._barrel_origins: dict[str, dict[str, str]] = defaultdict(dict)
+
         self._build_indices(parsed_files)
+        self._follow_barrel_exports()
+
+    def _follow_barrel_exports(self) -> None:
+        """Detect barrel/re-export files and record origin mappings.
+
+        A barrel file imports a name and re-exports it without defining it
+        locally (e.g., ``__init__.py`` with ``from .calculator import Calculator``).
+        When downstream code imports from the barrel, we follow one hop to
+        find the actual defining file.
+        """
+        for path, name_to_file in self._import_names.items():
+            file_syms = self._file_symbols.get(path, {})
+            for name, source_file in name_to_file.items():
+                if name not in file_syms:
+                    self._barrel_origins[path][name] = source_file
 
     def _build_indices(self, parsed_files: dict[str, ParsedFile]) -> None:
         """Build all lookup indices from parsed file data."""
@@ -97,16 +121,25 @@ class CallResolver:
             self._file_symbols[path] = file_syms
             self._file_methods[path] = file_methods
 
-            # Build import-name mapping from raw import data
+            # Build import-name mapping using per-import resolved_file
             for imp in parsed.imports:
-                # Determine target file for this import
-                targets = self._import_targets.get(path, set())
-                for target_file in targets:
-                    for name in imp.imported_names:
-                        if name == "*":
-                            # Wildcard import — all symbols from target are accessible
+                if imp.resolved_file is None:
+                    continue
+                resolved = imp.resolved_file
+                if imp.bindings:
+                    for binding in imp.bindings:
+                        if binding.local_name == "*":
                             continue
-                        self._import_names[path][name] = target_file
+                        binding.source_file = resolved
+                        self._import_names[path][binding.local_name] = resolved
+                        self._import_bindings[path][binding.local_name] = binding
+                        if binding.is_module_alias:
+                            self._module_aliases[path][binding.local_name] = resolved
+                else:
+                    # Fallback for imports without binding data
+                    for name in imp.imported_names:
+                        if name != "*":
+                            self._import_names[path][name] = resolved
 
     def resolve_file(self, file_path: str, calls: list[CallSite]) -> list[ResolvedCall]:
         """Resolve all calls in a single file to symbol-level edges."""
@@ -153,10 +186,26 @@ class CallResolver:
                 return ResolvedCall(caller_id, callee_id, 0.95, call.line)
 
         # Tier 2: import-scoped
-        # 2a: Check specific imported name → source file
+        # 2a: Check specific imported name → source file (binding-aware)
+        binding = self._import_bindings.get(file_path, {}).get(target_name)
+        if binding and binding.source_file:
+            source_file = binding.source_file
+            # Follow barrel re-export one hop
+            barrel = self._barrel_origins.get(source_file, {})
+            lookup_name = binding.exported_name or target_name
+            if lookup_name in barrel:
+                source_file = barrel[lookup_name]
+            source_syms = self._file_symbols.get(source_file, {})
+            if lookup_name in source_syms:
+                return ResolvedCall(caller_id, source_syms[lookup_name], 0.90, call.line)
+
+        # 2a fallback: plain _import_names (for imports without binding data)
         name_to_file = self._import_names.get(file_path, {})
-        if target_name in name_to_file:
+        if target_name in name_to_file and not binding:
             source_file = name_to_file[target_name]
+            barrel = self._barrel_origins.get(source_file, {})
+            if target_name in barrel:
+                source_file = barrel[target_name]
             source_syms = self._file_symbols.get(source_file, {})
             if target_name in source_syms:
                 return ResolvedCall(caller_id, source_syms[target_name], 0.90, call.line)
@@ -187,10 +236,16 @@ class CallResolver:
         method_name = call.target_name
         assert receiver_name is not None
 
-        # Strategy 1: receiver matches an imported name that resolves to a file
-        # (module-alias pattern: e.g. Python "import models" then "models.User()")
+        # Strategy 1: receiver is a module alias (e.g. "import models" → "models.User()")
+        module_file = self._module_aliases.get(file_path, {}).get(receiver_name)
+        if module_file:
+            source_syms = self._file_symbols.get(module_file, {})
+            if method_name in source_syms:
+                return ResolvedCall(caller_id, source_syms[method_name], 0.88, call.line)
+
+        # Strategy 1b: receiver in import names (non-alias fallback for backward compat)
         name_to_file = self._import_names.get(file_path, {})
-        if receiver_name in name_to_file:
+        if receiver_name in name_to_file and not module_file:
             source_file = name_to_file[receiver_name]
             source_syms = self._file_symbols.get(source_file, {})
             if method_name in source_syms:

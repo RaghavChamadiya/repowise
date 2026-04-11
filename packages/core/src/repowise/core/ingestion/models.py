@@ -185,6 +185,20 @@ class Symbol:
 
 
 @dataclass
+class NamedBinding:
+    """One resolved name from an import statement.
+
+    Tracks the local alias, the original exported name, and the resolved
+    source file so that call resolution can map aliases back to symbols.
+    """
+
+    local_name: str  # name used in calling file (e.g., "np", "Calc")
+    exported_name: str | None  # original name in source (None for module aliases)
+    source_file: str | None  # resolved file path (populated during graph build)
+    is_module_alias: bool = False  # True for "import x" / "import * as ns"
+
+
+@dataclass
 class Import:
     """An import statement extracted from a source file."""
 
@@ -193,6 +207,7 @@ class Import:
     imported_names: list[str]  # specific names, or ["*"] for wildcard
     is_relative: bool
     resolved_file: str | None  # absolute path if successfully resolved
+    bindings: list[NamedBinding] = field(default_factory=list)
 
 
 @dataclass

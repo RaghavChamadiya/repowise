@@ -18,6 +18,7 @@ from .models import (
     EdgeType,
     FileInfo,
     Import,
+    NamedBinding,
     PackageInfo,
     ParsedFile,
     RepoStructure,
@@ -34,6 +35,7 @@ __all__ = [
     "CallSite",
     "EdgeType",
     "EXTENSION_TO_LANGUAGE",
+    "NamedBinding",
     "LANGUAGE_CONFIGS",
     # Parsing
     "ASTParser",
