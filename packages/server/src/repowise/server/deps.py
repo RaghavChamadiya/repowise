@@ -66,7 +66,7 @@ async def verify_api_key(
     if _API_KEY is None:
         if _REPOWISE_HOST in ("0.0.0.0", "::"):
             raise HTTPException(
-                status_code=503,
+                status_code=403,
                 detail="Server is network-exposed but REPOWISE_API_KEY is not set. "
                 "Set REPOWISE_API_KEY or bind to 127.0.0.1.",
             )
