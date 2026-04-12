@@ -10,8 +10,8 @@ FastAPI REST API, webhook handlers, MCP server, and background job scheduler for
 
 | Component | Description |
 |-----------|-------------|
-| **REST API** | FastAPI application with full CRUD for repos, pages, symbols, jobs, git analytics, dead code |
-| **MCP Server** | 10 MCP tools for AI coding assistants (Claude Code, Cursor, Cline) |
+| **REST API** | FastAPI application with full CRUD for repos, pages, symbols, jobs, git analytics, dead code, graph intelligence |
+| **MCP Server** | 16 MCP tools for AI coding assistants (Claude Code, Cursor, Cline) |
 | **Webhooks** | GitHub and GitLab push event handlers — trigger incremental updates automatically |
 | **Scheduler** | APScheduler background jobs — polling fallback, stale page decay, periodic re-sync |
 
@@ -110,6 +110,17 @@ Job progress events (`JobProgressEvent`) carry: `event` type, `file` currently b
 |--------|------|-------------|
 | `GET` | `/api/graph/{repo_id}` | Export dependency graph as nodes + edges (supports language and test filters) |
 | `GET` | `/api/graph/{repo_id}/path` | Shortest dependency path between two modules |
+| `GET` | `/api/graph/{repo_id}/modules` | Collapsed directory-level module graph with doc coverage |
+| `GET` | `/api/graph/{repo_id}/ego` | N-hop neighborhood of a given node with git metadata |
+| `GET` | `/api/graph/{repo_id}/entry-points` | Subgraph reachable within 3 hops from entry-point nodes |
+| `GET` | `/api/graph/{repo_id}/dead-nodes` | High-confidence unreachable files with 1-hop neighbors |
+| `GET` | `/api/graph/{repo_id}/hot-files` | Most-committed files with 1-hop outgoing neighbors |
+| `GET` | `/api/graph/{repo_id}/nodes/search` | Full-text search over node IDs |
+| `GET` | `/api/graph/{repo_id}/communities` | List all communities with labels, cohesion scores, member counts |
+| `GET` | `/api/graph/{repo_id}/communities/{id}` | Community detail: members, neighboring communities, cross-edge counts |
+| `GET` | `/api/graph/{repo_id}/metrics` | Graph metrics with percentile ranks for any file or symbol |
+| `GET` | `/api/graph/{repo_id}/callers-callees` | Callers and callees for a symbol, with heritage support |
+| `GET` | `/api/graph/{repo_id}/execution-flows` | Top entry points with BFS call-path traces |
 
 ### Git Analytics
 
@@ -153,7 +164,7 @@ Job progress events (`JobProgressEvent`) carry: `event` type, `file` currently b
 
 ## MCP Server
 
-repowise exposes 10 MCP tools for AI coding assistants. Start the MCP server via:
+repowise exposes 16 MCP tools for AI coding assistants. Start the MCP server via:
 
 ```bash
 repowise mcp                          # stdio transport (Claude Code, Cursor, Cline)
@@ -162,7 +173,7 @@ repowise mcp --transport sse          # SSE transport on port 7338
 
 | Tool | What It Answers | When to Call |
 |------|----------------|-------------|
-| `get_overview` | Architecture summary, module map, entry points | First call when exploring an unfamiliar codebase |
+| `get_overview` | Architecture summary, module map, entry points, community summary | First call when exploring an unfamiliar codebase |
 | `get_context(targets)` | Docs, ownership, history, decisions, freshness for files/modules/symbols | When you need to understand specific code before reading or modifying it |
 | `get_risk(targets)` | Hotspot score, dependents, co-change partners, risk summary | Before modifying files — assess what could break |
 | `get_why(query?)` | Architectural decisions, rationale, constraints | Before making architectural changes — understand existing intent |
@@ -170,6 +181,14 @@ repowise mcp --transport sse          # SSE transport on port 7338
 | `get_dependency_path(from, to)` | Connection path between two files/modules | When you need to understand how two things are connected |
 | `get_dead_code` | Unused/unreachable code sorted by cleanup impact | Before cleanup tasks |
 | `get_architecture_diagram` | Mermaid diagram for repo or module | For documentation or presentation |
+| `get_answer(question)` | One-call RAG with confidence gating and caching | First call on any code question |
+| `get_symbol(symbol_id)` | Source body, signature, docstring for a qualified symbol | When the question names a specific function or class |
+| `annotate_file(target, notes)` | Attach human-authored notes to a wiki page | Adding context that survives re-indexing |
+| `get_callers_callees(symbol_id)` | Callers, callees, and class hierarchy (extends/implements) | Understanding call relationships for any symbol |
+| `get_community(target)` | Community membership, cohesion, neighboring communities | Understanding module boundaries and refactoring safety |
+| `get_graph_metrics(target)` | PageRank/betweenness percentiles, degree, community label | Assessing file or symbol importance in the graph |
+| `get_execution_flows(top_n?)` | Entry point scoring with BFS call-path traces | Understanding how the codebase executes |
+| `update_decision_records(action)` | Create, update, list, or deprecate decision records | After architectural changes |
 
 **Claude Code / Cursor / Cline setup** — add to your MCP config:
 

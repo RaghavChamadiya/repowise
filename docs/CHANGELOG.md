@@ -33,6 +33,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`repowise augment` CLI command** — hook-driven context enrichment engine. Reads Claude Code hook payloads from stdin, queries local wiki.db, and returns enriched context as JSON. Not meant to be called manually.
 - **`install_claude_code_hooks()`** — idempotent hook registration in `mcp_config.py`. Merges repowise hooks into existing user hooks without clobbering.
 
+- **5 new REST API endpoints** for graph intelligence:
+  - `GET /api/graph/{repo_id}/communities` — list all communities with labels, cohesion scores, and member counts
+  - `GET /api/graph/{repo_id}/communities/{id}` — community detail with member list and neighboring communities
+  - `GET /api/graph/{repo_id}/metrics?node_id=` — graph metrics (PageRank, betweenness, degree) with percentile ranks
+  - `GET /api/graph/{repo_id}/callers-callees?symbol_id=` — callers and callees for a symbol, with edge type filtering
+  - `GET /api/graph/{repo_id}/execution-flows` — execution flow traces from top-scored entry points
+- **Web UI — Overview page** — new "Graph Intelligence" section with an expandable community list (labels, cohesion, member counts) and an execution flows panel showing top entry points with call-path traces
+- **Web UI — Wiki (Docs) page** — new collapsible right sidebar section showing PageRank and betweenness percentile bars, community label, and in/out degree for the current file
+- **Web UI — Symbols page** — symbol drawer now has a right panel with graph metrics, callers/callees (with confidence scores), and heritage (extends/implements) for class nodes
+- **Web UI — Graph page** — community color mode now shows real community labels (from Leiden detection) in the legend instead of generic placeholders; clicking a node in community color mode opens a community detail panel; active color mode is preserved as a URL parameter
+- **Shared BFS trace utility** (`_graph_utils.py`) — reused by both the MCP `get_execution_flows` tool and the REST execution-flows router to avoid duplication
+
 ### Changed
 - **`get_overview`** now includes `community_summary` — top communities by size with labels and cohesion scores
 - **`get_context`** (compact=False) now includes `community` block per file target with community ID and label
