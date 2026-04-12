@@ -86,11 +86,13 @@ async def _workspace_overview() -> dict:
                 "is_default": is_default,
             })
 
-    # Cross-repo topology (Phase 3)
+    # Cross-repo topology (Phase 3 + 4)
     cross_repo_topology: dict[str, Any] = {}
     enricher = _state._cross_repo_enricher
     if enricher is not None and enricher.has_data:
         cross_repo_topology = enricher.get_cross_repo_summary()
+        if enricher.has_contract_data:
+            cross_repo_topology["contracts"] = enricher.get_contract_summary()
         # Add per-repo package deps
         for repo_info in repos_info:
             deps = enricher.get_package_deps(repo_info["alias"])
@@ -147,10 +149,12 @@ def _build_workspace_footer() -> dict | None:
         ),
     }
 
-    # Cross-repo intelligence (Phase 3)
+    # Cross-repo intelligence (Phase 3 + 4)
     enricher = _state._cross_repo_enricher
     if enricher is not None and enricher.has_data:
         footer["cross_repo"] = enricher.get_cross_repo_summary()
+        if enricher.has_contract_data:
+            footer["contract_links"] = enricher.get_contract_summary()
 
     return footer
 
@@ -162,8 +166,10 @@ async def get_overview(repo: str | None = None) -> dict:
     Best first call when starting to explore an unfamiliar codebase.
 
     In workspace mode:
-    - Omit ``repo`` for the default repo overview (includes workspace context).
-    - Use ``repo="all"`` for a workspace-level summary of all repos.
+    - Omit ``repo`` for the default repo overview (includes workspace context,
+      cross-repo co-changes, package dependencies, and API contract links).
+    - Use ``repo="all"`` for a workspace-level summary of all repos including
+      cross-repo topology and contract links (HTTP routes, gRPC services, topics).
     - Use ``repo="<alias>"`` to query a specific repo.
 
     Args:

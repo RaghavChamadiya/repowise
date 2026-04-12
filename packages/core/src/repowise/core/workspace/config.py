@@ -58,12 +58,76 @@ class RepoEntry:
 
 
 @dataclass
+class ManualContractLink:
+    """A manually declared cross-repo contract link in the workspace config."""
+
+    from_repo: str
+    to_repo: str
+    contract_type: str  # "http" | "grpc" | "topic"
+    contract_id: str  # normalized contract ID
+    from_role: str = "consumer"  # the from_repo's role
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "from_repo": self.from_repo,
+            "to_repo": self.to_repo,
+            "contract_type": self.contract_type,
+            "contract_id": self.contract_id,
+            "from_role": self.from_role,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> ManualContractLink:
+        return cls(
+            from_repo=str(data["from_repo"]),
+            to_repo=str(data["to_repo"]),
+            contract_type=str(data["contract_type"]),
+            contract_id=str(data["contract_id"]),
+            from_role=str(data.get("from_role", "consumer")),
+        )
+
+
+@dataclass
+class ContractConfig:
+    """Configuration for contract detection (Phase 4)."""
+
+    detect_http: bool = True
+    detect_grpc: bool = True
+    detect_topics: bool = True
+    manual_links: list[ManualContractLink] = field(default_factory=list)
+
+    def to_dict(self) -> dict[str, Any]:
+        d: dict[str, Any] = {
+            "detect_http": self.detect_http,
+            "detect_grpc": self.detect_grpc,
+            "detect_topics": self.detect_topics,
+        }
+        if self.manual_links:
+            d["manual_links"] = [ml.to_dict() for ml in self.manual_links]
+        return d
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> ContractConfig:
+        manual = [
+            ManualContractLink.from_dict(ml)
+            for ml in data.get("manual_links", [])
+        ]
+        return cls(
+            detect_http=bool(data.get("detect_http", True)),
+            detect_grpc=bool(data.get("detect_grpc", True)),
+            detect_topics=bool(data.get("detect_topics", True)),
+            manual_links=manual,
+        )
+
+
+@dataclass
 class WorkspaceConfig:
     """Workspace-level configuration stored in ``.repowise-workspace.yaml``."""
 
     version: int = CURRENT_VERSION
     repos: list[RepoEntry] = field(default_factory=list)
     default_repo: str | None = None
+    contracts: ContractConfig = field(default_factory=ContractConfig)
 
     # ------------------------------------------------------------------
     # Serialization
@@ -71,11 +135,20 @@ class WorkspaceConfig:
 
     def to_dict(self) -> dict[str, Any]:
         """Convert to a plain dict suitable for ``yaml.dump``."""
-        return {
+        d: dict[str, Any] = {
             "version": self.version,
             "default_repo": self.default_repo,
             "repos": [r.to_dict() for r in self.repos],
         }
+        # Only include contracts section if non-default
+        contracts_d = self.contracts.to_dict()
+        if self.contracts.manual_links or not all([
+            self.contracts.detect_http,
+            self.contracts.detect_grpc,
+            self.contracts.detect_topics,
+        ]):
+            d["contracts"] = contracts_d
+        return d
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> WorkspaceConfig:
@@ -87,10 +160,13 @@ class WorkspaceConfig:
         for entry in data.get("repos", []):
             repos.append(RepoEntry.from_dict(entry))
 
+        contracts = ContractConfig.from_dict(data.get("contracts", {}))
+
         return cls(
             version=version,
             repos=repos,
             default_repo=str(default_repo) if default_repo else None,
+            contracts=contracts,
         )
 
     def save(self, workspace_root: Path) -> Path:
