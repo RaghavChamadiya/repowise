@@ -355,6 +355,11 @@ async def get_risk(
     - test_gap: bool — True if no test file exists for this file
     - security_signals: list of {kind, severity, snippet} from static analysis
 
+    In workspace mode, includes cross-repo impact: co-change partners from
+    other repos, affected repos, and API contract links (files in other repos
+    that consume HTTP/gRPC/topic contracts provided by this file, or providers
+    this file depends on). Cross-repo consumers increase the dependents count.
+
     Plus the top 5 global hotspots for ambient awareness.
 
     Pass ``changed_files`` for PR review / blast radius analysis. When provided,
@@ -448,7 +453,7 @@ async def get_risk(
             analyzer = PRBlastRadiusAnalyzer(session, repo_id)
             pr_blast_radius = await analyzer.analyze_files(changed_files)
 
-    # Cross-repo blast radius enrichment (Phase 3)
+    # Cross-repo blast radius enrichment (Phase 3 + 4)
     enricher = _state._cross_repo_enricher
     if enricher is not None and enricher.has_data and _is_workspace_mode():
         for r in results:
@@ -464,6 +469,40 @@ async def get_risk(
                     "affected_repos": affected_repos,
                 }
                 r["dependents_count"] = r.get("dependents_count", 0) + len(cross_partners)
+
+            # Contract links (Phase 4)
+            if enricher.has_contract_data:
+                provider_links = enricher.get_contract_links_as_provider(
+                    ctx.alias, target
+                )
+                consumer_links = enricher.get_contract_links_as_consumer(
+                    ctx.alias, target
+                )
+                if provider_links or consumer_links:
+                    impact = r.setdefault("cross_repo_impact", {})
+                    if provider_links:
+                        impact["contract_consumers"] = [
+                            {
+                                "consumer_repo": lk["consumer_repo"],
+                                "consumer_file": lk["consumer_file"],
+                                "contract_id": lk["contract_id"],
+                                "type": lk["contract_type"],
+                            }
+                            for lk in provider_links[:5]
+                        ]
+                        r["dependents_count"] = (
+                            r.get("dependents_count", 0) + len(provider_links)
+                        )
+                    if consumer_links:
+                        impact["contract_providers"] = [
+                            {
+                                "provider_repo": lk["provider_repo"],
+                                "provider_file": lk["provider_file"],
+                                "contract_id": lk["contract_id"],
+                                "type": lk["contract_type"],
+                            }
+                            for lk in consumer_links[:5]
+                        ]
 
     response: dict = {
         "targets": {r["target"]: r for r in results},

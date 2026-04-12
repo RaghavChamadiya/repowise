@@ -347,3 +347,11 @@ async def run_cross_repo_hooks(
         await run_cross_repo_analysis(ws_config, workspace_root, changed_repos)
     except Exception:
         _log.warning("Cross-repo analysis failed", exc_info=True)
+
+    # Phase 4: Contract extraction
+    from .contracts import run_contract_extraction
+
+    try:
+        await run_contract_extraction(ws_config, workspace_root, changed_repos)
+    except Exception:
+        _log.warning("Contract extraction failed", exc_info=True)

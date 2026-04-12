@@ -1065,6 +1065,10 @@ async def get_context(
     Default returns title + summary + symbol signatures. Add include options
     for richer data. Pass all relevant targets in one call.
 
+    In workspace mode, responses are automatically enriched with cross-repo
+    signals: co-change partners, and API contract links (HTTP routes, gRPC
+    services, message topics consumed/provided by this file).
+
     Include options:
       - "docs" (default): wiki summary + symbol signatures
       - "full_doc": full wiki markdown content
@@ -1119,20 +1123,53 @@ async def get_context(
         ),
     }
 
-    # Cross-repo enrichment (Phase 3)
+    # Cross-repo enrichment (Phase 3 + 4)
     from repowise.server.mcp_server._helpers import _is_workspace_mode
 
     enricher = _state._cross_repo_enricher
     if enricher is not None and enricher.has_data and _is_workspace_mode():
         for target_key, target_data in response["targets"].items():
+            cross_repo: dict[str, Any] = {}
+
             partners = enricher.get_cross_repo_partners(ctx.alias, target_key)
             if partners:
-                target_data["cross_repo"] = {
-                    "co_changes_with": [
-                        {"repo": p["repo"], "file": p["file"], "strength": p["strength"]}
-                        for p in partners[:5]
-                    ],
-                }
+                cross_repo["co_changes_with"] = [
+                    {"repo": p["repo"], "file": p["file"], "strength": p["strength"]}
+                    for p in partners[:5]
+                ]
+
+            # Contract links (Phase 4)
+            if enricher.has_contract_data:
+                provider_links = enricher.get_contract_links_as_provider(
+                    ctx.alias, target_key
+                )
+                consumer_links = enricher.get_contract_links_as_consumer(
+                    ctx.alias, target_key
+                )
+                if provider_links or consumer_links:
+                    contracts: dict[str, Any] = {}
+                    if provider_links:
+                        contracts["consumers"] = [
+                            {
+                                "consumer_repo": lk["consumer_repo"],
+                                "contract_id": lk["contract_id"],
+                                "type": lk["contract_type"],
+                            }
+                            for lk in provider_links[:5]
+                        ]
+                    if consumer_links:
+                        contracts["providers"] = [
+                            {
+                                "provider_repo": lk["provider_repo"],
+                                "contract_id": lk["contract_id"],
+                                "type": lk["contract_type"],
+                            }
+                            for lk in consumer_links[:5]
+                        ]
+                    cross_repo["contracts"] = contracts
+
+            if cross_repo:
+                target_data["cross_repo"] = cross_repo
 
     # Enforce the global token cap. See ``_truncate_to_budget`` for strategy.
     return _truncate_to_budget(response)

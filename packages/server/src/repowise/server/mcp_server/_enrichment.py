@@ -18,7 +18,11 @@ _log = logging.getLogger("repowise.mcp.enrichment")
 class CrossRepoEnricher:
     """In-memory lookup for cross-repo signals."""
 
-    def __init__(self, data_path: Path) -> None:
+    def __init__(
+        self,
+        data_path: Path,
+        contracts_path: Path | None = None,
+    ) -> None:
         self._co_changes: list[dict] = []
         self._package_deps: list[dict] = []
         self._repo_summaries: dict[str, dict] = {}
@@ -29,7 +33,15 @@ class CrossRepoEnricher:
         self._package_dep_index: dict[str, list[dict]] = defaultdict(list)
         self._package_dep_reverse: dict[str, list[str]] = defaultdict(list)
 
+        # Contract indexes (Phase 4)
+        self._contracts: list[dict] = []
+        self._contract_links: list[dict] = []
+        self._contract_provider_index: dict[tuple[str, str], list[dict]] = defaultdict(list)
+        self._contract_consumer_index: dict[tuple[str, str], list[dict]] = defaultdict(list)
+
         self._load(data_path)
+        if contracts_path is not None:
+            self._load_contracts(contracts_path)
 
     def _load(self, data_path: Path) -> None:
         """Parse JSON and build indexes."""
@@ -96,10 +108,44 @@ class CrossRepoEnricher:
             len(self._package_deps),
         )
 
+    def _load_contracts(self, contracts_path: Path) -> None:
+        """Parse ``contracts.json`` and build lookup indexes."""
+        if not contracts_path.is_file():
+            _log.debug("No contract data at %s", contracts_path)
+            return
+
+        try:
+            data = json.loads(contracts_path.read_text(encoding="utf-8"))
+        except Exception:
+            _log.warning(
+                "Failed to parse contract data at %s", contracts_path, exc_info=True
+            )
+            return
+
+        self._contracts = data.get("contracts", [])
+        self._contract_links = data.get("contract_links", [])
+
+        for link in self._contract_links:
+            provider_key = (link["provider_repo"], link["provider_file"])
+            consumer_key = (link["consumer_repo"], link["consumer_file"])
+            self._contract_provider_index[provider_key].append(link)
+            self._contract_consumer_index[consumer_key].append(link)
+
+        _log.debug(
+            "Contract enricher loaded: %d contracts, %d links",
+            len(self._contracts),
+            len(self._contract_links),
+        )
+
     @property
     def has_data(self) -> bool:
         """True if any cross-repo signals are available."""
-        return bool(self._co_changes or self._package_deps)
+        return bool(self._co_changes or self._package_deps or self._contract_links)
+
+    @property
+    def has_contract_data(self) -> bool:
+        """True if contract links are available."""
+        return bool(self._contract_links)
 
     def get_cross_repo_partners(
         self, repo_alias: str, file_path: str
@@ -160,7 +206,7 @@ class CrossRepoEnricher:
     ) -> list[str]:
         """Return repo aliases that may be impacted by changes to this file.
 
-        Combines co-change partners + package dep consumers.
+        Combines co-change partners + package dep consumers + contract links.
         """
         repos: set[str] = set()
 
@@ -172,5 +218,37 @@ class CrossRepoEnricher:
         for dep_repo in self._package_dep_reverse.get(repo_alias, []):
             repos.add(dep_repo)
 
+        # From contract links: repos that consume APIs this file provides
+        for link in self._contract_provider_index.get((repo_alias, file_path), []):
+            repos.add(link["consumer_repo"])
+
         repos.discard(repo_alias)
         return sorted(repos)
+
+    # ------------------------------------------------------------------
+    # Contract queries (Phase 4)
+    # ------------------------------------------------------------------
+
+    def get_contract_links_as_provider(
+        self, repo_alias: str, file_path: str
+    ) -> list[dict]:
+        """Contract links where this file is the provider (has consumers)."""
+        return self._contract_provider_index.get((repo_alias, file_path), [])
+
+    def get_contract_links_as_consumer(
+        self, repo_alias: str, file_path: str
+    ) -> list[dict]:
+        """Contract links where this file is the consumer (depends on providers)."""
+        return self._contract_consumer_index.get((repo_alias, file_path), [])
+
+    def get_contract_summary(self) -> dict:
+        """High-level contract stats for the overview footer."""
+        by_type: dict[str, int] = defaultdict(int)
+        for c in self._contracts:
+            by_type[c.get("contract_type", "unknown")] += 1
+
+        return {
+            "total_contracts": len(self._contracts),
+            "total_links": len(self._contract_links),
+            "by_type": dict(by_type),
+        }

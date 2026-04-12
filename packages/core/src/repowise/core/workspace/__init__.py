@@ -8,6 +8,8 @@ from __future__ import annotations
 from .config import (
     WORKSPACE_CONFIG_FILENAME,
     WORKSPACE_DATA_DIR,
+    ContractConfig,
+    ManualContractLink,
     RepoEntry,
     WorkspaceConfig,
     ensure_workspace_data_dir,
@@ -38,6 +40,15 @@ from .cross_repo import (
     run_cross_repo_analysis,
     save_overlay,
 )
+from .contracts import (
+    CONTRACTS_FILENAME,
+    Contract,
+    ContractLink,
+    ContractStore,
+    load_contract_store,
+    run_contract_extraction,
+    save_contract_store,
+)
 
 __all__ = [
     # Scanner
@@ -47,6 +58,8 @@ __all__ = [
     # Config
     "WORKSPACE_CONFIG_FILENAME",
     "WORKSPACE_DATA_DIR",
+    "ContractConfig",
+    "ManualContractLink",
     "RepoEntry",
     "WorkspaceConfig",
     "ensure_workspace_data_dir",
@@ -68,4 +81,12 @@ __all__ = [
     "load_overlay",
     "run_cross_repo_analysis",
     "save_overlay",
+    # Contracts (Phase 4)
+    "CONTRACTS_FILENAME",
+    "Contract",
+    "ContractLink",
+    "ContractStore",
+    "load_contract_store",
+    "run_contract_extraction",
+    "save_contract_store",
 ]
