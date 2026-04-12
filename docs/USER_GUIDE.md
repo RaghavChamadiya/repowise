@@ -316,7 +316,7 @@ This is how you connect repowise to Claude Code, Cursor, Cline, Windsurf, and ot
 | `--transport` | Protocol: `stdio` (default, for editors) or `sse` (for web clients) |
 | `--port` | Port for SSE transport (default: 7338) |
 
-**MCP tools exposed (11 tools):**
+**MCP tools exposed (16 tools):**
 
 | Tool | What it does |
 |------|-------------|
@@ -331,8 +331,48 @@ This is how you connect repowise to Claude Code, Cursor, Cline, Windsurf, and ot
 | `get_dead_code` | Tiered dead code report grouped by confidence |
 | `get_architecture_diagram` | Mermaid diagram with optional churn heat map |
 | `annotate_file` | Attach human-authored notes to a wiki page — survives re-indexing |
+| `get_callers_callees` | Find who calls a symbol and what it calls. Pass `edge_types=["extends","implements"]` to traverse class hierarchy instead of call edges. |
+| `get_community` | Show the architectural community a file belongs to — cohesion score, member list, neighboring communities with cross-edge counts. |
+| `get_graph_metrics` | PageRank, betweenness centrality, percentile ranks, and in/out degree for any file or symbol node. |
+| `get_execution_flows` | Top scored entry points with BFS call-path traces and cross-community classification. |
 
 See [MCP Integration](#mcp-integration-with-ai-editors) for setup instructions.
+
+#### Graph intelligence tools
+
+The four graph tools work against the symbol-level dependency graph built during ingestion and give AI editors precise structural awareness without requiring them to read source files.
+
+**`get_callers_callees`**
+
+```
+get_callers_callees(symbol_id, direction, edge_types, limit)
+```
+
+Returns the callers or callees of a symbol. `direction` is `"callers"`, `"callees"`, or `"both"`. `edge_types` defaults to `["calls"]`; pass `["extends", "implements"]` to traverse class hierarchy instead of call edges. Results include confidence scores and source locations.
+
+**`get_community`**
+
+```
+get_community(target, include_members, member_limit)
+```
+
+Shows the architectural community a file belongs to — its label (heuristically derived from dominant patterns), cohesion score, and neighboring communities with cross-edge counts. `include_members=true` lists all files in the community up to `member_limit`.
+
+**`get_graph_metrics`**
+
+```
+get_graph_metrics(target)
+```
+
+Returns PageRank, betweenness centrality, percentile ranks (e.g. "top 5% by PageRank"), and in/out degree for any file or symbol node. Useful for understanding how structurally central a file is before modifying it.
+
+**`get_execution_flows`**
+
+```
+get_execution_flows(top_n, max_depth, entry_point)
+```
+
+Returns the top-scored entry points (ranked by a 5-signal scoring model: fan-out ratio, in-degree, visibility, name pattern, framework hint) with BFS call-path traces showing how execution flows through the codebase. Each flow is annotated with cross-community transitions so you can see module boundary crossings. Supply `entry_point` to trace from a specific symbol rather than the auto-ranked list.
 
 ---
 
@@ -636,7 +676,7 @@ A single-page dashboard for each repository that aggregates key health signals. 
 - **Quick actions** — one-click buttons for sync, full re-index, CLAUDE.md generation, and export
 - **Active job banner** — shows progress of running pipeline jobs with live polling
 
-The overview page degrades gracefully — each data section loads independently, so partial data (e.g., missing git metadata) still renders a useful dashboard.
+The overview page degrades gracefully — each data section loads independently, so partial data (e.g., missing git metadata) still renders a useful dashboard. A "Graph Intelligence" section at the bottom of the overview shows an expandable list of architectural communities (with labels, cohesion scores, and member counts) and an execution flows panel listing the top entry points with their call-path traces.
 
 **Wiki Browser** (`/repos/[id]/wiki/...`)
 The heart of repowise. Browse AI-generated documentation for every file and module. Each page includes:
@@ -645,6 +685,7 @@ The heart of repowise. Browse AI-generated documentation for every file and modu
 - Freshness badge (fresh / stale / outdated)
 - Git history sidebar — commits, churn percentile, top authors, co-change partners, hotspot indicator
 - Regenerate button for stale pages
+- "Graph Intelligence" section in the right sidebar showing PageRank and betweenness percentile bars, community label, and in/out degree counts
 
 **Dependency Graph** (`/repos/[id]/graph`)
 Interactive force-directed graph rendered on HTML Canvas with D3.js. Handles 2000+ nodes. Six view modes:
@@ -655,13 +696,13 @@ Interactive force-directed graph rendered on HTML Canvas with D3.js. Handles 200
 - **Hot files view** — commit activity heatmap
 - **Full graph** — everything
 
-Supports pan, zoom, click-to-inspect, path finding between nodes, filtering by language, and PNG export.
+Supports pan, zoom, click-to-inspect, path finding between nodes, filtering by language, and PNG export. Community color mode uses real community labels (derived from Leiden detection) in the legend rather than generic placeholders. Clicking a node in community color mode opens a community detail panel showing members, cohesion score, and neighboring communities. The active color mode is preserved as a URL parameter so links can be shared.
 
 **Search** (`/repos/[id]/search`)
 Full-text and semantic search with result cards showing snippets, confidence scores, and links. A global command palette (`Ctrl+K` / `Cmd+K`) is accessible from any page for quick navigation.
 
 **Symbol Index** (`/repos/[id]/symbols`)
-Searchable, sortable table of every extracted symbol (functions, classes, methods, interfaces). Click any row for the full signature, docstring, and source location.
+Searchable, sortable table of every extracted symbol (functions, classes, methods, interfaces). Click any row to open the symbol drawer, which now includes a right panel showing graph metrics (PageRank and betweenness percentile bars), callers and callees with confidence scores, and heritage relationships (extends/implements) for classes.
 
 **Documentation Coverage** (`/repos/[id]/coverage`)
 Donut chart and table showing freshness breakdown. Regenerate stale pages directly from the UI.

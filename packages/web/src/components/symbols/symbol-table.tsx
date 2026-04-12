@@ -233,7 +233,7 @@ export function SymbolTable({ repoId }: SymbolTableProps) {
         </>
       )}
 
-      <SymbolDrawer symbol={selected} onClose={() => setSelected(null)} />
+      <SymbolDrawer symbol={selected} repoId={repoId} onClose={() => setSelected(null)} />
     </div>
   );
 }

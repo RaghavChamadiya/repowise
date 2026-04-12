@@ -29,6 +29,7 @@ import {
   useArchitectureGraph,
   useDeadCodeGraph,
   useHotFilesGraph,
+  useCommunities,
 } from "@/lib/hooks/use-graph";
 import { ModuleGroupNode } from "./nodes/module-group-node";
 import { FileNode } from "./nodes/file-node";
@@ -38,6 +39,7 @@ import { useModuleElkLayout, useFileElkLayout } from "./use-elk-layout";
 import { PathFinderPanel } from "./path-finder-panel";
 import { GraphToolbar, type ColorMode, type ViewMode } from "./graph-toolbar";
 import { GraphLegend } from "./graph-legend";
+import { GraphCommunityPanel } from "./graph-community-panel";
 import { GraphContextMenu } from "./graph-context-menu";
 import { GraphTooltip } from "./graph-tooltip";
 import { languageColor } from "@/lib/utils/confidence";
@@ -92,9 +94,16 @@ function GraphFlowInner({
 }: GraphFlowInnerProps) {
   const reactFlow = useReactFlow();
 
-  // State
+  // State — read initial colorMode from URL if present
   const [viewMode, setViewMode] = useState<ViewMode>("module");
-  const [colorMode, setColorMode] = useState<ColorMode>("language");
+  const [colorMode, setColorMode] = useState<ColorMode>(() => {
+    if (typeof window !== "undefined") {
+      const params = new URLSearchParams(window.location.search);
+      const cm = params.get("colorMode");
+      if (cm === "community" || cm === "language" || cm === "risk") return cm;
+    }
+    return "language";
+  });
   const [hideTests, setHideTests] = useState(false);
   const [highlightedPath, setHighlightedPath] = useState<Set<string>>(new Set());
   const [highlightedEdges, setHighlightedEdges] = useState<Set<string>>(new Set());
@@ -142,6 +151,16 @@ function GraphFlowInner({
   const { graph: hotGraph, isLoading: hotLoading } = useHotFilesGraph(
     viewMode === "hotfiles" ? repoId : null,
   );
+
+  // Community data for legend labels and detail panel
+  const { communities } = useCommunities(repoId);
+  const communityLabels = useMemo(() => {
+    if (!communities) return undefined;
+    const m = new Map<number, string>();
+    for (const c of communities) m.set(c.community_id, c.label);
+    return m;
+  }, [communities]);
+  const [communityPanelId, setCommunityPanelId] = useState<number | null>(null);
 
   // ---- Derived data ----
 
@@ -261,6 +280,14 @@ function GraphFlowInner({
         setSelectedNodeId(null);
         return;
       }
+      // In community mode, open community detail panel
+      if (colorMode === "community" && node.type === "fileNode") {
+        const nodeData = node.data as FileNodeData;
+        if (nodeData?.communityId !== undefined) {
+          setCommunityPanelId(nodeData.communityId);
+        }
+      }
+
       // Toggle selection — show tooltip on click
       const mEvent = event as unknown as React.MouseEvent;
       if (selectedNodeId === node.id) {
@@ -271,7 +298,7 @@ function GraphFlowInner({
         setSelectedNodeScreen({ x: mEvent.clientX, y: mEvent.clientY });
       }
     },
-    [isModuleView, selectedNodeId],
+    [isModuleView, selectedNodeId, colorMode],
   );
 
   const handleNodeMouseEnter: NodeMouseHandler = useCallback(
@@ -573,6 +600,7 @@ function GraphFlowInner({
             edgeCount={currentEdges.length}
             colorMode={colorMode}
             viewMode={viewMode}
+            communityLabels={communityLabels}
           />
         </div>
 
@@ -587,6 +615,15 @@ function GraphFlowInner({
             onExplore={handleCtxExplore}
             onPathFrom={handleCtxPathFrom}
             onPathTo={handleCtxPathTo}
+          />
+        )}
+
+        {/* Community detail panel */}
+        {communityPanelId !== null && (
+          <GraphCommunityPanel
+            repoId={repoId}
+            communityId={communityPanelId}
+            onClose={() => setCommunityPanelId(null)}
           />
         )}
 

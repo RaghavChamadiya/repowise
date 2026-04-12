@@ -73,7 +73,7 @@ If Node.js 20+ is installed, the web UI starts automatically. Otherwise, use Doc
 repowise mcp --transport stdio
 ```
 
-> **Automatic for Claude Code:** `repowise init` already registers the MCP server and installs PreToolUse/PostToolUse hooks in `~/.claude/settings.json`. Every `Grep`/`Glob` call is automatically enriched with graph context (importers, dependencies, symbols, git signals). After git commits, the agent is notified when the wiki is stale.
+> **Automatic for Claude Code:** `repowise init` already registers the MCP server and installs PreToolUse/PostToolUse hooks in `~/.claude/settings.json`. Every `Grep`/`Glob` call is automatically enriched with graph context (importers, dependencies, symbols, git signals). After git commits, the agent is notified when the wiki is stale. The MCP server exposes 16 tools, including the new graph intelligence tools (`get_callers_callees`, `get_community`, `get_graph_metrics`, `get_execution_flows`).
 
 ## 5. Keep It in Sync
 
@@ -93,7 +93,7 @@ repowise watch
 
 ## Web UI
 
-Repowise includes a full web dashboard with a repository overview, wiki browser, interactive dependency graph, codebase chat, search, code ownership, hotspots, and dead code detection. The overview page shows a health score, attention items, language breakdown, ownership treemap, and quick actions.
+Repowise includes a full web dashboard with a repository overview, wiki browser, interactive dependency graph, codebase chat, search, code ownership, hotspots, and dead code detection. The overview page shows a health score, attention items, language breakdown, ownership treemap, quick actions, and a "Graph Intelligence" section with architectural communities and execution flow traces. The graph page uses real community labels in its legend and shows community detail panels on node click. Wiki pages now include a graph sidebar with PageRank and betweenness percentile bars. The symbols page shows callers, callees, and class heritage in the symbol drawer.
 
 ### With Node.js installed
 
@@ -153,5 +153,5 @@ REPOWISE_API_URL=http://localhost:7337 npm run dev --workspace packages/web
 
 ## What's Next
 
-- **[User Guide](USER_GUIDE.md)** — full CLI reference (all 13 commands with every flag), web UI features, MCP setup, common workflows, and troubleshooting
+- **[User Guide](USER_GUIDE.md)** — full CLI reference (all 13 commands with every flag), web UI features, MCP setup (all 16 tools), common workflows, and troubleshooting
 - **[Architecture](ARCHITECTURE.md)** — how repowise is built internally

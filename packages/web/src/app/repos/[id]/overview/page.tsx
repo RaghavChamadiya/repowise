@@ -5,7 +5,7 @@ import { getRepo, getRepoStats } from "@/lib/api/repos";
 import { getGitSummary, getHotspots, getOwnership } from "@/lib/api/git";
 import { getDeadCodeSummary, listDeadCode } from "@/lib/api/dead-code";
 import { listDecisions, getDecisionHealth } from "@/lib/api/decisions";
-import { getGraph, getModuleGraph } from "@/lib/api/graph";
+import { getGraph, getModuleGraph, getCommunities, getExecutionFlows } from "@/lib/api/graph";
 import { getProviders } from "@/lib/api/providers";
 import { listJobs } from "@/lib/api/jobs";
 import { getKnowledgeMap } from "@/lib/api/knowledge-map";
@@ -20,6 +20,8 @@ import { computeHealthScore, buildAttentionItems, aggregateLanguages } from "@/l
 import { HotspotsMini } from "@/components/dashboard/hotspots-mini";
 import { DecisionsTimeline } from "@/components/dashboard/decisions-timeline";
 import { ModuleMinimap } from "@/components/dashboard/module-minimap";
+import { CommunitySummaryGrid } from "@/components/dashboard/community-summary-grid";
+import { ExecutionFlowsPanel } from "@/components/dashboard/execution-flows-panel";
 import { BusFactorPanel } from "@/components/git/bus-factor-panel";
 import { ChurnHistogram } from "@/components/git/churn-histogram";
 import { CommitCategoryDonut } from "@/components/git/commit-category-donut";
@@ -37,6 +39,8 @@ import type {
   DecisionHealthResponse,
   GraphExportResponse,
   ModuleGraphResponse,
+  CommunitySummaryItem,
+  ExecutionFlowsResponse,
 } from "@/lib/api/types";
 
 export const metadata: Metadata = { title: "Overview" };
@@ -61,7 +65,7 @@ export default async function OverviewPage({ params }: Props) {
   if (!repo) notFound();
 
   // Fetch all data in parallel — each independently failable
-  const [stats, gitSummary, hotspots, ownership, deadCodeSummary, deadCodeSafe, decisions, decisionHealth, graph, moduleGraph, providers, completedJobs, knowledgeMap] =
+  const [stats, gitSummary, hotspots, ownership, deadCodeSummary, deadCodeSafe, decisions, decisionHealth, graph, moduleGraph, providers, completedJobs, knowledgeMap, communities, executionFlows] =
     await Promise.all([
       safeFetch(() => getRepoStats(id)),
       safeFetch(() => getGitSummary(id)),
@@ -76,6 +80,8 @@ export default async function OverviewPage({ params }: Props) {
       safeFetch(() => getProviders()),
       safeFetch(() => listJobs({ repo_id: id, limit: 20, status: "completed" })),
       safeFetch(() => getKnowledgeMap(id)),
+      safeFetch(() => getCommunities(id)),
+      safeFetch(() => getExecutionFlows(id, { top_n: 5, max_depth: 5 })),
     ]);
 
   // Find timestamps for last sync and last full re-index from completed jobs
@@ -299,6 +305,23 @@ export default async function OverviewPage({ params }: Props) {
           edges={moduleGraph.edges}
           repoId={id}
         />
+      )}
+
+      {/* ── Graph Intelligence: Communities & Execution Flows ── */}
+      {((communities && communities.length > 0) || (executionFlows && executionFlows.flows.length > 0)) && (
+        <div className="space-y-4">
+          <h2 className="text-sm font-medium text-[var(--color-text-secondary)] uppercase tracking-wider">
+            Graph Intelligence
+          </h2>
+          <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+            {communities && communities.length > 0 && (
+              <CommunitySummaryGrid communities={communities} repoId={id} />
+            )}
+            {executionFlows && executionFlows.flows.length > 0 && (
+              <ExecutionFlowsPanel flows={executionFlows.flows} repoId={id} />
+            )}
+          </div>
+        </div>
       )}
 
       {/* ── Knowledge Map ── */}
