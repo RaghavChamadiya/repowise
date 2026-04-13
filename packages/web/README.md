@@ -35,11 +35,13 @@ Landing page for a single repo. Displays health score, git insights (commit acti
 The core documentation viewer. Renders AI-generated wiki pages as MDX with:
 - Shiki syntax-highlighted code blocks
 - Embedded Mermaid diagrams (flowcharts, sequence diagrams, etc.)
-- Auto-generated sticky table of contents from headings
+- Auto-generated sticky table of contents with anchor-linked headings (scroll-to-heading)
 - Confidence badge showing freshness (fresh/stale/outdated) with last-updated tooltip
 - Git history panel showing the file's change timeline
 - Regenerate button to force a fresh AI pass on stale pages
 - Graph intelligence sidebar (XL screens) with PageRank/betweenness percentiles, community label, degree counts, entry point badge
+- Hallucination warnings — surfaces LLM validation findings (symbol references not found in source) as amber banners
+- Version history with diff view — browse previous page versions and compare changes inline
 
 ### Dependency Graph (`/repos/[id]/graph`)
 
@@ -78,9 +80,19 @@ Ranked table of high-churn files with churn bar charts and an owner leaderboard.
 
 Tabbed view of dead code findings (unreachable files, unused exports). Supports row-level actions (ignore, mark as false positive), bulk selection, and a trigger to run fresh analysis. Summary bar shows counts by category.
 
+### Documentation Explorer (`/repos/[id]/docs`)
+
+Split-pane documentation browser (VS Code-style). Left panel is a searchable file tree with type/freshness filters and colored freshness dots. Right panel renders full wiki content with:
+- Mermaid diagram rendering and syntax-highlighted code blocks with copy buttons
+- Graph intelligence sidebar (PageRank/betweenness percentiles, community, callers/callees)
+- Version history browser with LCS-based inline diff view
+- Hallucination warning banners for pages with detected inaccuracies
+- Deep-linkable page selection via URL search params (`?page=...`)
+- Export All (single `.md`) and Download ZIP buttons
+
 ### Architectural Decisions (`/repos/[id]/decisions`)
 
-Lists extracted architectural decision records with health metrics. Each decision has a detail page (`/repos/[id]/decisions/[decisionId]`) showing rationale, status, and related code.
+Lists extracted architectural decision records with health metrics. Each decision has a detail page (`/repos/[id]/decisions/[decisionId]`) showing context, rationale, alternatives, and consequences rendered as markdown, with Confirm/Dismiss/Deprecate actions.
 
 ### Settings (`/settings` and `/repos/[id]/settings`)
 
@@ -131,7 +143,7 @@ Organized by domain — `repos.ts`, `pages.ts`, `graph.ts`, `search.ts`, `symbol
 components/
   ui/           Radix-based primitives (button, card, dialog, tabs, tooltip, etc.)
   layout/       Sidebar, mobile nav
-  wiki/         Wiki renderer, code blocks, Mermaid, ToC, confidence badge
+  wiki/         Wiki renderer (RSC + client), code blocks, Mermaid, ToC, confidence badge, version history with diff
   graph/        React Flow canvas, toolbar, legend, tooltip, community panel, path finder
   search/       Command palette, search bar, result cards
   jobs/         Generation progress (SSE), job logs

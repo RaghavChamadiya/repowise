@@ -10,10 +10,10 @@ FastAPI REST API, webhook handlers, MCP server, and background job scheduler for
 
 | Component | Description |
 |-----------|-------------|
-| **REST API** | FastAPI application with full CRUD for repos, pages, symbols, jobs, git analytics, dead code, graph intelligence |
+| **REST API** | FastAPI application with full CRUD for repos, pages (with version history), symbols, jobs, git analytics, dead code, decisions, graph intelligence |
 | **MCP Server** | 16 MCP tools for AI coding assistants (Claude Code, Cursor, Cline) |
-| **Webhooks** | GitHub and GitLab push event handlers — trigger incremental updates automatically |
-| **Scheduler** | APScheduler background jobs — polling fallback, stale page decay, periodic re-sync |
+| **Webhooks** | GitHub and GitLab push event handlers — trigger sync jobs automatically on push |
+| **Scheduler** | APScheduler background jobs — polling fallback (auto-syncs diverged repos), stale page detection |
 
 ---
 
@@ -75,8 +75,8 @@ All endpoints are prefixed with `/api/`. When `REPOWISE_API_KEY` is set, every r
 | `POST` | `/api/repos` | Register a new repository |
 | `GET` | `/api/repos/{id}` | Get repository details and sync state |
 | `PATCH` | `/api/repos/{id}` | Update repository settings (name, branch, provider) |
-| `POST` | `/api/repos/{id}/sync` | Trigger incremental sync (equivalent to `repowise update`) |
-| `POST` | `/api/repos/{id}/full-resync` | Trigger full re-generation (equivalent to `repowise init`) |
+| `POST` | `/api/repos/{id}/sync` | Re-index and regenerate only affected pages (graph, git, dead code, decisions + incremental page regen) |
+| `POST` | `/api/repos/{id}/full-resync` | Full re-generation of all pages from scratch (equivalent to `repowise init`) |
 
 ### Pages
 
@@ -140,6 +140,16 @@ Job progress events (`JobProgressEvent`) carry: `event` type, `file` currently b
 | `POST` | `/api/dead-code/{repo_id}/analyze` | Trigger dead code analysis |
 | `GET` | `/api/dead-code/{repo_id}/summary` | Summary stats (total findings, deletable lines, by kind) |
 | `PATCH` | `/api/dead-code/{id}` | Update a finding's status: `resolved`, `acknowledged`, or `dismissed` |
+
+### Decisions
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/api/repos/{id}/decisions` | List decision records (supports `status`, `source`, `tag`, `module` filters) |
+| `GET` | `/api/repos/{id}/decisions/health` | Decision health summary — active, proposed, stale counts, ungoverned hotspots |
+| `GET` | `/api/repos/{id}/decisions/{decisionId}` | Get a single decision record with full context |
+| `POST` | `/api/repos/{id}/decisions` | Create a decision record manually |
+| `PATCH` | `/api/repos/{id}/decisions/{decisionId}` | Update decision status (active, deprecated, superseded) |
 
 ### Search
 
@@ -224,7 +234,7 @@ Register the webhook URL with GitHub or GitLab so `repowise update` runs automat
 3. Set **Secret token** to the value of `REPOWISE_WEBHOOK_SECRET`
 4. Enable **Push events**
 
-The server verifies HMAC-SHA256 signatures, deduplicates events (stored in the `webhook_events` table), and queues an incremental sync job via the scheduler.
+The server verifies HMAC-SHA256 signatures, deduplicates events (stored in the `webhook_events` table), and launches a background sync job that re-indexes the repo and regenerates only affected wiki pages.
 
 ---
 
@@ -234,9 +244,8 @@ The APScheduler instance manages the following recurring tasks:
 
 | Job | Schedule | Description |
 |-----|----------|-------------|
-| Stale page decay | Every 6 hours | Reduces confidence scores on pages whose source hash has changed |
-| Polling fallback | Every 15 minutes | Checks for new commits on repos without webhook integration |
-| Dead code re-analysis | Daily | Re-runs dead code analysis after large syncs |
+| Staleness check | Every 15 minutes | Finds stale/expired wiki pages and logs them for monitoring |
+| Polling fallback | Every 15 minutes | Compares git HEAD against `state.json` for all repos; enqueues and launches sync jobs for any that have diverged (catches missed webhooks) |
 
 ---
 

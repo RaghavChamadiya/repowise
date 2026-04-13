@@ -124,6 +124,22 @@ export default async function WikiPageRoute({ params }: Props) {
           <article className="prose prose-invert max-w-none leading-relaxed overflow-hidden">
             <WikiRenderer content={page.content} />
           </article>
+
+          {/* Hallucination warnings */}
+          {Array.isArray(page.metadata?.hallucination_warnings) && (page.metadata.hallucination_warnings as string[]).length > 0 && (
+            <div className="mt-6 rounded-lg border border-amber-400/30 bg-amber-50/5 px-4 py-3">
+              <p className="text-xs font-medium text-amber-400 mb-1.5">
+                Possible inaccuracies detected
+              </p>
+              <ul className="space-y-0.5">
+                {(page.metadata.hallucination_warnings as string[]).map((w, i) => (
+                  <li key={i} className="text-xs text-amber-300/80 font-mono">
+                    {String(w)}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
         </div>
 
         {/* Bottom bar */}
@@ -249,6 +265,14 @@ export default async function WikiPageRoute({ params }: Props) {
                 <span className="text-[var(--color-text-tertiary)] shrink-0">Level</span>
                 <span className="text-[var(--color-text-secondary)] tabular-nums">{page.generation_level}</span>
               </div>
+              {Array.isArray(page.metadata?.hallucination_warnings) && (page.metadata.hallucination_warnings as string[]).length > 0 && (
+                <div className="flex justify-between gap-2">
+                  <span className="text-[var(--color-text-tertiary)] shrink-0">Warnings</span>
+                  <Badge variant="stale" className="text-[10px]">
+                    {(page.metadata.hallucination_warnings as string[]).length}
+                  </Badge>
+                </div>
+              )}
             </div>
           </div>
         </div>

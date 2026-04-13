@@ -1019,9 +1019,12 @@ async def list_decisions(
     if source is not None:
         q = q.where(DecisionRecord.source == source)
     if tag is not None:
-        q = q.where(DecisionRecord.tags_json.contains(tag))
+        # Match exact tag value in JSON array, not substring.
+        # JSON arrays store as '["tag1", "tag2"]', so we match '"tag"'
+        q = q.where(DecisionRecord.tags_json.contains(f'"{tag}"'))
     if module is not None:
-        q = q.where(DecisionRecord.affected_modules_json.contains(module))
+        # Match exact module path in JSON array
+        q = q.where(DecisionRecord.affected_modules_json.contains(f'"{module}"'))
     q = q.order_by(DecisionRecord.created_at.desc()).limit(limit).offset(offset)
     result = await session.execute(q)
     return list(result.scalars().all())
@@ -1112,14 +1115,54 @@ async def delete_decision(session: AsyncSession, decision_id: str) -> bool:
     return True
 
 
+def _normalize_title(title: str) -> str:
+    """Normalize a decision title for cross-source dedup comparison."""
+    import re as _re
+    t = title.lower().strip()
+    t = _re.sub(r"[^a-z0-9\s]", "", t)
+    t = _re.sub(r"\s+", " ", t)
+    return t
+
+
 async def bulk_upsert_decisions(
     session: AsyncSession,
     repository_id: str,
     decisions: list[dict],
 ) -> None:
-    """Bulk upsert decision records from a list of dicts."""
-    for i in range(0, len(decisions), _BATCH_SIZE):
-        batch = decisions[i : i + _BATCH_SIZE]
+    """Bulk upsert decision records from a list of dicts.
+
+    Performs cross-source deduplication: if two decisions from different
+    sources have near-identical normalized titles, the one with higher
+    confidence wins and the other is skipped.
+    """
+    # Cross-source dedup: group by normalized title, keep highest confidence
+    seen: dict[str, dict] = {}  # normalized_title → best decision dict
+    for d in decisions:
+        title = d.get("title", "")
+        norm = _normalize_title(title)
+        if not norm:
+            continue
+        existing = seen.get(norm)
+        if existing is None:
+            seen[norm] = d
+        else:
+            # Keep the one with higher confidence; on tie, prefer more specific source
+            new_conf = d.get("confidence", 0.0)
+            old_conf = existing.get("confidence", 0.0)
+            if new_conf > old_conf:
+                seen[norm] = d
+            elif new_conf == old_conf:
+                # Prefer inline_marker > readme_mining > git_archaeology
+                source_priority = {"inline_marker": 3, "readme_mining": 2, "git_archaeology": 1}
+                if source_priority.get(d.get("source", ""), 0) > source_priority.get(
+                    existing.get("source", ""), 0
+                ):
+                    seen[norm] = d
+
+    deduped = list(seen.values())
+
+    for i in range(0, len(deduped), _BATCH_SIZE):
+        batch = deduped[i : i + _BATCH_SIZE]
         for d in batch:
             await upsert_decision(
                 session,

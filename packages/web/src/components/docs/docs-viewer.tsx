@@ -20,7 +20,8 @@ import {
   GitBranch,
 } from "lucide-react";
 import { cn } from "@/lib/utils/cn";
-import { ChatMarkdown } from "@/components/chat/chat-markdown";
+import { WikiMarkdown } from "@/components/wiki/wiki-markdown";
+import { VersionHistory } from "@/components/wiki/version-history";
 import { ConfidenceBadge } from "@/components/wiki/confidence-badge";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -309,9 +310,34 @@ export function DocsViewer({ page, repoId, isLoading }: DocsViewerProps) {
             )}
 
             {/* Markdown content */}
-            <article className="prose-chat">
-              <ChatMarkdown content={page.content} />
+            <article className="prose prose-invert max-w-none leading-relaxed overflow-hidden">
+              <WikiMarkdown content={page.content} />
             </article>
+
+            {/* Version history */}
+            <div className="mt-8">
+              <VersionHistory
+                pageId={page.id}
+                currentVersion={page.version}
+                currentContent={page.content}
+              />
+            </div>
+
+            {/* Metadata warnings */}
+            {Array.isArray(page.metadata?.hallucination_warnings) && (page.metadata.hallucination_warnings as string[]).length > 0 && (
+              <div className="mt-4 rounded-lg border border-amber-400/30 bg-amber-50/5 px-4 py-3">
+                <p className="text-xs font-medium text-amber-400 mb-1.5">
+                  Possible inaccuracies detected
+                </p>
+                <ul className="space-y-0.5">
+                  {(page.metadata.hallucination_warnings as string[]).map((w, i) => (
+                    <li key={i} className="text-xs text-amber-300/80 font-mono">
+                      {String(w)}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
           </div>
         </div>
       </div>
