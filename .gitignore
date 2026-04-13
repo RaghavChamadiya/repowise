@@ -80,6 +80,8 @@ next-env.d.ts
 # repowise runtime data
 .repowise/
 !.repowise/mcp.json.example
+.repowise-workspace/
+.repowise-workspace.yaml
 
 # Database
 *.db

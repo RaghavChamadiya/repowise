@@ -637,6 +637,13 @@ export interface WorkspaceRepoEntry {
   is_primary: boolean;
   indexed_at: string | null;
   last_commit_at_index: string | null;
+  // Per-repo stats from each repo's wiki.db
+  repo_id: string | null;
+  file_count: number;
+  symbol_count: number;
+  page_count: number;
+  doc_coverage_pct: number;
+  hotspot_count: number;
 }
 
 export interface WorkspaceCrossRepoSummary {

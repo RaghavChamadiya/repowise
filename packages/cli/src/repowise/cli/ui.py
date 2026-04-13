@@ -11,6 +11,7 @@ from typing import Any
 import click
 from rich.console import Console, Group
 from rich.panel import Panel
+from rich.progress import ProgressColumn, Task
 from rich.prompt import Prompt
 from rich.rule import Rule
 from rich.table import Table
@@ -1035,6 +1036,29 @@ def format_elapsed(seconds: float) -> str:
         s = int(seconds) % 60
         return f"{m}m {s}s"
     return f"{seconds:.1f}s"
+
+
+# ---------------------------------------------------------------------------
+# Rich progress helpers
+# ---------------------------------------------------------------------------
+
+
+class MaybeCountColumn(ProgressColumn):
+    """Progress column that shows ``completed/total`` when total is known,
+    or just ``completed`` when total is ``None`` (indeterminate phase).
+
+    This prevents the ugly ``1214/None`` display that appears for phases
+    like file traversal and dead-code detection whose total is not known
+    upfront.
+    """
+
+    def render(self, task: Task) -> Text:
+        if task.total is None:
+            return Text(str(int(task.completed)), style="progress.download")
+        return Text(
+            f"{int(task.completed)}/{int(task.total)}",
+            style="progress.download",
+        )
 
 
 # ---------------------------------------------------------------------------

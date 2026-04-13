@@ -11,9 +11,6 @@ import {
   ArrowRight,
 } from "lucide-react";
 import { getWorkspace, getWorkspaceCoChanges } from "@/lib/api/workspace";
-import { listRepos, getRepoStats } from "@/lib/api/repos";
-import { getGitSummary } from "@/lib/api/git";
-import type { RepoStatsResponse, GitSummaryResponse } from "@/lib/api/types";
 import { StatCard } from "@/components/shared/stat-card";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { RepoCard } from "@/components/workspace/repo-card";
@@ -35,59 +32,28 @@ async function safeFetch<T>(fn: () => Promise<T>): Promise<T | null> {
 }
 
 export default async function WorkspaceDashboardPage() {
-  const [workspace, repos, coChanges] = await Promise.all([
+  const [workspace, coChanges] = await Promise.all([
     safeFetch(() => getWorkspace()),
-    safeFetch(() => listRepos()),
     safeFetch(() => getWorkspaceCoChanges({ limit: 10 })),
   ]);
 
-  const repoList = repos ?? [];
+  const wsRepos = workspace?.repos ?? [];
 
-  // Fetch per-repo stats + git summaries in parallel
-  const [statsResults, gitResults] = await Promise.all([
-    Promise.allSettled(repoList.map((r) => getRepoStats(r.id))),
-    Promise.allSettled(repoList.map((r) => getGitSummary(r.id))),
-  ]);
-
-  const statsMap = new Map<string, RepoStatsResponse>();
-  const gitMap = new Map<string, GitSummaryResponse>();
-  repoList.forEach((r, i) => {
-    if (statsResults[i]?.status === "fulfilled")
-      statsMap.set(r.id, (statsResults[i] as PromiseFulfilledResult<RepoStatsResponse>).value);
-    if (gitResults[i]?.status === "fulfilled")
-      gitMap.set(r.id, (gitResults[i] as PromiseFulfilledResult<GitSummaryResponse>).value);
-  });
-
-  // Aggregate stats
+  // Aggregate stats from per-repo data embedded in the workspace response
   let totalFiles = 0;
   let totalSymbols = 0;
   let totalCoveragePctSum = 0;
   let totalHotspots = 0;
-  let totalDeadCode = 0;
   let reposWithStats = 0;
 
-  for (const s of statsMap.values()) {
-    totalFiles += s.file_count;
-    totalSymbols += s.symbol_count;
-    totalCoveragePctSum += s.doc_coverage_pct;
-    totalDeadCode += s.dead_export_count;
-    reposWithStats++;
-  }
-  for (const g of gitMap.values()) {
-    totalHotspots += g.hotspot_count;
+  for (const r of wsRepos) {
+    totalFiles += r.file_count;
+    totalSymbols += r.symbol_count;
+    totalCoveragePctSum += r.doc_coverage_pct;
+    totalHotspots += r.hotspot_count;
+    if (r.file_count > 0) reposWithStats++;
   }
   const avgCoverage = reposWithStats > 0 ? Math.round(totalCoveragePctSum / reposWithStats) : 0;
-
-  // Build alias → repo ID map for repo cards
-  const aliasToRepoId = new Map<string, string>();
-  if (workspace?.repos) {
-    for (const wsRepo of workspace.repos) {
-      const match = repoList.find(
-        (r) => r.name === wsRepo.alias || r.local_path.endsWith(wsRepo.path),
-      );
-      if (match) aliasToRepoId.set(wsRepo.alias, match.id);
-    }
-  }
 
   return (
     <div className="p-5 sm:p-8 space-y-8 max-w-[1200px]">
@@ -132,9 +98,8 @@ export default async function WorkspaceDashboardPage() {
           icon={<Flame className="h-4 w-4 text-orange-400" />}
         />
         <StatCard
-          label="Dead Code"
-          value={totalDeadCode > 0 ? formatNumber(totalDeadCode) : "—"}
-          description={totalDeadCode > 0 ? "Unused exports" : "Run analysis"}
+          label="Pages"
+          value={formatNumber(wsRepos.reduce((a, r) => a + r.page_count, 0))}
           icon={<Code2 className="h-4 w-4 text-[var(--color-text-tertiary)]" />}
         />
       </div>
@@ -145,21 +110,31 @@ export default async function WorkspaceDashboardPage() {
           Repositories
         </h2>
         <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-          {(workspace?.repos ?? []).map((wsRepo) => {
-            const repoId = aliasToRepoId.get(wsRepo.alias) ?? "";
-            return (
+          {wsRepos.map((wsRepo) => (
               <RepoCard
                 key={wsRepo.alias}
-                repoId={repoId}
+                repoId={wsRepo.repo_id ?? ""}
                 alias={wsRepo.alias}
                 name={wsRepo.alias}
                 path={wsRepo.path}
                 isPrimary={wsRepo.is_primary}
-                stats={repoId ? (statsMap.get(repoId) ?? null) : null}
-                gitSummary={repoId ? (gitMap.get(repoId) ?? null) : null}
+                stats={wsRepo.file_count > 0 ? {
+                  file_count: wsRepo.file_count,
+                  symbol_count: wsRepo.symbol_count,
+                  doc_coverage_pct: wsRepo.doc_coverage_pct,
+                  entry_point_count: 0,
+                  freshness_score: 0,
+                  dead_export_count: 0,
+                } : null}
+                gitSummary={wsRepo.file_count > 0 ? {
+                  total_files: wsRepo.file_count,
+                  hotspot_count: wsRepo.hotspot_count,
+                  stable_count: 0,
+                  average_churn_percentile: 0,
+                  top_owners: [],
+                } : null}
               />
-            );
-          })}
+          ))}
         </div>
       </section>
 

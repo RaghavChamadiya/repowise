@@ -7,6 +7,8 @@ startup from ``.repowise-workspace/`` JSON files) — no DB access needed.
 
 from __future__ import annotations
 
+import logging
+import sqlite3
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
@@ -35,10 +37,69 @@ router = APIRouter(
 )
 
 
+_log = logging.getLogger("repowise.server.routers.workspace")
+
+
 def _require_workspace(ws_config: object) -> None:
     """Raise 404 if not in workspace mode."""
     if ws_config is None:
         raise HTTPException(status_code=404, detail="Not running in workspace mode")
+
+
+def _query_repo_stats(db_path: Path) -> dict:
+    """Query basic stats from a repo's wiki.db using raw sqlite3.
+
+    Returns a dict with repo_id, file_count, symbol_count, page_count,
+    doc_coverage_pct, hotspot_count.  All values default to 0/None on error.
+    """
+    result: dict = {
+        "repo_id": None,
+        "file_count": 0,
+        "symbol_count": 0,
+        "page_count": 0,
+        "doc_coverage_pct": 0.0,
+        "hotspot_count": 0,
+    }
+    if not db_path.exists():
+        return result
+    try:
+        conn = sqlite3.connect(str(db_path))
+        c = conn.cursor()
+
+        # repo id
+        row = c.execute("SELECT id FROM repositories LIMIT 1").fetchone()
+        if row:
+            result["repo_id"] = row[0]
+
+        # file count (graph_nodes)
+        row = c.execute("SELECT COUNT(*) FROM graph_nodes").fetchone()
+        result["file_count"] = row[0] if row else 0
+
+        # symbol count
+        row = c.execute("SELECT COALESCE(SUM(symbol_count), 0) FROM graph_nodes").fetchone()
+        result["symbol_count"] = int(row[0]) if row else 0
+
+        # page count
+        row = c.execute("SELECT COUNT(*) FROM wiki_pages").fetchone()
+        result["page_count"] = row[0] if row else 0
+
+        # doc coverage (avg confidence * 100)
+        row = c.execute("SELECT AVG(confidence) FROM wiki_pages").fetchone()
+        result["doc_coverage_pct"] = round(float(row[0] or 0.0) * 100, 1)
+
+        # hotspot count (git_metadata with churn_percentile >= 90)
+        try:
+            row = c.execute(
+                "SELECT COUNT(*) FROM git_metadata WHERE churn_percentile >= 90"
+            ).fetchone()
+            result["hotspot_count"] = row[0] if row else 0
+        except sqlite3.OperationalError:
+            pass  # table or column may not exist
+
+        conn.close()
+    except Exception:
+        _log.debug("Failed to query stats from %s", db_path, exc_info=True)
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -60,16 +121,26 @@ async def get_workspace(
     if ws_config is None:
         return WorkspaceResponse(is_workspace=False)
 
-    repo_entries = [
-        WorkspaceRepoEntry(
-            alias=r.alias,
-            path=r.path,
-            is_primary=r.is_primary,
-            indexed_at=r.indexed_at,
-            last_commit_at_index=r.last_commit_at_index,
+    ws_root = getattr(request.app.state, "workspace_root", None)
+    ws_root_path = Path(ws_root) if ws_root else None
+
+    repo_entries = []
+    for r in ws_config.repos:
+        stats: dict = {}
+        if ws_root_path:
+            repo_path = (ws_root_path / r.path).resolve()
+            db_path = repo_path / ".repowise" / "wiki.db"
+            stats = _query_repo_stats(db_path)
+        repo_entries.append(
+            WorkspaceRepoEntry(
+                alias=r.alias,
+                path=r.path,
+                is_primary=r.is_primary,
+                indexed_at=r.indexed_at,
+                last_commit_at_index=r.last_commit_at_index,
+                **stats,
+            )
         )
-        for r in ws_config.repos
-    ]
 
     cross_repo_summary = None
     contract_summary = None
@@ -81,12 +152,10 @@ async def get_workspace(
             cs = enricher.get_contract_summary()
             contract_summary = WorkspaceContractSummary(**cs)
 
-    ws_root = getattr(request.app.state, "workspace_root", None)
-
     return WorkspaceResponse(
         is_workspace=True,
         workspace_root=ws_root,
-        workspace_name=Path(ws_root).name if ws_root else None,
+        workspace_name=Path(ws_root_path).name if ws_root_path else None,
         repos=repo_entries,
         default_repo=ws_config.default_repo,
         cross_repo_summary=cross_repo_summary,

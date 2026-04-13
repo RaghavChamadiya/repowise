@@ -92,16 +92,13 @@ def scan_for_repos(
     """
     root = Path(root).resolve()
 
-    # Fast path: root itself is a git repo → single-repo result
-    if _is_git_repo(root):
-        is_sub = _is_submodule(root)
-        if is_sub and not include_submodules:
-            return ScanResult(repos=[], root=root)
-        aliases = _generate_aliases([(root, root)])
-        repo = _make_repo(root, root, aliases[root], is_sub)
-        return ScanResult(repos=[repo], root=root)
+    # Check if root itself is a git repo
+    root_is_repo = _is_git_repo(root)
+    root_is_sub = _is_submodule(root) if root_is_repo else False
 
-    # Walk the tree
+    # Walk the tree for sub-repos even if root is a git repo — a workspace
+    # can be a git repo that contains other git repos (e.g. non-submodule
+    # nested repos like backend/ and frontend/).
     found: list[tuple[Path, bool]] = []  # (abs_path, is_submodule)
     skipped: list[str] = []
 
@@ -134,6 +131,20 @@ def scan_for_repos(
         # Don't descend into discovered repos
         for dirname in repos_at_this_level:
             dirnames.remove(dirname)
+
+    # If root is a git repo and no sub-repos found → single-repo result
+    # If root is a git repo AND sub-repos found → include root in the list
+    if root_is_repo:
+        if not found:
+            # Pure single-repo — no sub-repos
+            if root_is_sub and not include_submodules:
+                return ScanResult(repos=[], root=root)
+            aliases = _generate_aliases([(root, root)])
+            repo = _make_repo(root, root, aliases[root], root_is_sub)
+            return ScanResult(repos=[repo], root=root)
+        # Root + sub-repos → workspace mode; add root to the list
+        if not root_is_sub or include_submodules:
+            found.insert(0, (root, root_is_sub))
 
     # Sort by relative path for deterministic ordering
     found.sort(key=lambda item: item[0].relative_to(root).as_posix())

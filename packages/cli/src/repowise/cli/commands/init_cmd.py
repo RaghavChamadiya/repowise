@@ -26,6 +26,7 @@ from repowise.cli.helpers import (
     save_config,
     save_state,
 )
+from repowise.cli.ui import MaybeCountColumn
 
 # ---------------------------------------------------------------------------
 # Helpers (kept in this file; _resolve_embedder also imported by other cmds)
@@ -171,12 +172,171 @@ async def _persist_result(
         )
         await persist_pipeline_result(result, session, repo.id)
 
+        # Record a completed GenerationJob so the web UI can show
+        # "last synced" / "last re-indexed" timestamps.
+        from datetime import datetime, UTC as _UTC
+        from repowise.core.persistence.crud import upsert_generation_job
+
+        now = datetime.now(_UTC)
+        page_count = len(result.generated_pages) if result.generated_pages else 0
+        job = await upsert_generation_job(
+            session,
+            repository_id=repo.id,
+            status="completed",
+            total_pages=page_count,
+            config={"mode": "full_resync", "source": "cli_init"},
+        )
+        job.completed_pages = page_count
+        job.started_at = now
+        job.finished_at = now
+
     # FTS indexing is done outside the session to avoid SQLite write conflicts
     if fts is not None and result.generated_pages:
         for page in result.generated_pages:
             await fts.index(page.page_id, page.title, page.content)
 
     await engine.dispose()
+
+
+# ---------------------------------------------------------------------------
+# Workspace generation helper (per-repo)
+# ---------------------------------------------------------------------------
+
+
+def _run_workspace_generation(
+    *,
+    repo_path: Path,
+    result: Any,
+    provider: Any,
+    embedder_name_resolved: str,
+    concurrency: int,
+    yes: bool,
+    resume: bool,
+    skip_tests: bool,
+    skip_infra: bool,
+    test_run: bool,
+) -> list[Any]:
+    """Run LLM generation for a single repo in the workspace init flow.
+
+    Returns the list of generated pages.  Raises on unrecoverable errors so
+    the caller can catch and log per-repo failures without aborting the whole
+    workspace run.
+    """
+    from repowise.cli.cost_estimator import build_generation_plan, estimate_cost
+    from repowise.cli.ui import BRAND, RichProgressCallback
+    from repowise.core.generation import GenerationConfig
+    from repowise.core.generation.cost_tracker import CostTracker
+    from repowise.core.persistence.vector_store import InMemoryVectorStore
+    from repowise.core.providers.embedding.base import MockEmbedder
+    from repowise.core.pipeline import run_generation
+    from repowise.cli.helpers import get_db_url_for_repo
+    from repowise.core.persistence import (
+        create_engine as _ce,
+        create_session_factory as _csf,
+        get_session as _gs,
+        init_db as _idb,
+        upsert_repository as _ur,
+    )
+
+    # Build embedder
+    embedder_impl: Any
+    if embedder_name_resolved == "gemini":
+        try:
+            from repowise.core.providers.embedding.gemini import GeminiEmbedder
+
+            embedder_impl = GeminiEmbedder()
+        except Exception:
+            embedder_impl = MockEmbedder()
+    elif embedder_name_resolved == "openai":
+        try:
+            from repowise.core.providers.embedding.openai import OpenAIEmbedder
+
+            embedder_impl = OpenAIEmbedder()
+        except Exception:
+            embedder_impl = MockEmbedder()
+    else:
+        embedder_impl = MockEmbedder()
+
+    # Build vector store
+    lance_dir = repo_path / ".repowise" / "lancedb"
+    try:
+        from repowise.core.persistence.vector_store import LanceDBVectorStore
+
+        lance_dir.mkdir(parents=True, exist_ok=True)
+        vector_store: Any = LanceDBVectorStore(str(lance_dir), embedder=embedder_impl)
+    except ImportError:
+        vector_store = InMemoryVectorStore(embedder_impl)
+
+    # Cost estimate
+    gen_config = GenerationConfig(max_concurrency=concurrency)
+    plans = build_generation_plan(
+        result.parsed_files, result.graph_builder, gen_config, skip_tests, skip_infra
+    )
+    est = estimate_cost(plans, provider.provider_name, provider.model_name)
+
+    console.print(
+        f"    Estimated tokens: ~{est.estimated_input_tokens + est.estimated_output_tokens:,} "
+        f"(${est.estimated_cost_usd:.2f} USD, {est.total_pages} pages)"
+    )
+
+    if (
+        est.estimated_cost_usd > 2.00
+        and not yes
+        and not click.confirm(f"    Cost for {repo_path.name} exceeds $2.00. Continue?")
+    ):
+        console.print("    [yellow]Skipped.[/yellow]")
+        return []
+
+    # Cost tracker (DB-backed when possible)
+    from rich.progress import BarColumn, Progress, SpinnerColumn, TextColumn, TimeElapsedColumn
+
+    async def _make_cost_tracker() -> CostTracker:
+        url = get_db_url_for_repo(repo_path)
+        engine = _ce(url)
+        await _idb(engine)
+        sf = _csf(engine)
+        async with _gs(sf) as _sess:
+            _repo = await _ur(_sess, name=result.repo_name, local_path=str(repo_path))
+            _repo_id = _repo.id
+        return CostTracker(session_factory=sf, repo_id=_repo_id)
+
+    try:
+        cost_tracker = run_async(_make_cost_tracker())
+    except Exception:
+        cost_tracker = CostTracker()
+
+    provider._cost_tracker = cost_tracker
+
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        BarColumn(),
+        MaybeCountColumn(),
+        TimeElapsedColumn(),
+        TextColumn("[green]${task.fields[cost]:.3f}[/green]"),
+        console=console,
+    ) as gen_progress:
+        gen_callback = RichProgressCallback(gen_progress, console)
+
+        generated_pages = run_async(
+            run_generation(
+                repo_path=repo_path,
+                parsed_files=result.parsed_files,
+                source_map=result.source_map,
+                graph_builder=result.graph_builder,
+                repo_structure=result.repo_structure,
+                git_meta_map=result.git_meta_map,
+                llm_client=provider,
+                embedder=embedder_impl,
+                vector_store=vector_store,
+                concurrency=concurrency,
+                progress=gen_callback,
+                resume=resume,
+                cost_tracker=cost_tracker,
+            )
+        )
+
+    return generated_pages
 
 
 # ---------------------------------------------------------------------------
@@ -193,12 +353,40 @@ def _workspace_init(
     follow_renames: bool,
     no_claude_md: bool,
     include_submodules: bool,
+    # Generation params (passed through from init_command)
+    provider_name: str | None = None,
+    model: str | None = None,
+    embedder_name: str | None = None,
+    index_only: bool = False,
+    skip_tests: bool = False,
+    skip_infra: bool = False,
+    concurrency: int = 5,
+    test_run: bool = False,
+    yes: bool = False,
+    dry_run: bool = False,
+    resume: bool = False,
+    force: bool = False,
 ) -> None:
     """Multi-repo workspace initialization.
 
     Detects repos, prompts for selection and primary, creates a workspace
-    config, and runs index-only on each selected repo.
+    config, then runs ingestion on each repo.  When the user selects full or
+    advanced mode (interactively) or passes an explicit provider, also runs
+    LLM generation per repo.
     """
+    import logging
+
+    logging.getLogger("httpx").setLevel(logging.ERROR)
+    logging.getLogger("httpcore").setLevel(logging.ERROR)
+    for _logger_name in ("repowise.core", "repowise.server"):
+        logging.getLogger(_logger_name).setLevel(logging.ERROR)
+    try:
+        import structlog
+
+        structlog.configure(wrapper_class=structlog.make_filtering_bound_logger(logging.ERROR))
+    except ImportError:
+        pass
+
     from rich.progress import BarColumn, Progress, SpinnerColumn, TextColumn, TimeElapsedColumn
 
     from repowise.cli.mcp_config import save_mcp_config, save_root_mcp_config
@@ -207,8 +395,12 @@ def _workspace_init(
         RichProgressCallback,
         build_completion_panel,
         format_elapsed,
+        interactive_advanced_config,
+        interactive_mode_select,
         interactive_primary_select,
+        interactive_provider_select,
         interactive_repo_select,
+        load_dotenv,
         print_banner,
     )
     from repowise.core.pipeline import run_pipeline
@@ -236,6 +428,55 @@ def _workspace_init(
     else:
         primary_alias = interactive_primary_select(console, selected)
 
+    # Determine root path (for provider resolution + dotenv)
+    primary_repo = next((r for r in selected if r.alias == primary_alias), selected[0])
+    load_dotenv(primary_repo.path)
+
+    # Step 2b: Mode selection + provider setup
+    # When running interactively with no explicit flags, present the mode menu.
+    is_interactive = sys.stdin.isatty() and provider_name is None and not index_only
+
+    embedder_name_resolved = _resolve_embedder(embedder_name)
+
+    if is_interactive:
+        mode = interactive_mode_select(console)
+        if mode == "index_only":
+            index_only = True
+        elif mode == "advanced":
+            provider_name, model = interactive_provider_select(
+                console, model, repo_path=primary_repo.path
+            )
+            adv = interactive_advanced_config(console)
+            commit_limit = adv.get("commit_limit") or commit_limit
+            follow_renames = adv.get("follow_renames", follow_renames)
+            skip_tests = adv.get("skip_tests", skip_tests)
+            skip_infra = adv.get("skip_infra", skip_infra)
+            concurrency = adv.get("concurrency", concurrency)
+            if adv.get("exclude"):
+                exclude_patterns = list(exclude_patterns) + list(adv["exclude"])
+            test_run = adv.get("test_run", test_run)
+            embedder_name_resolved = _resolve_embedder(adv.get("embedder") or embedder_name)
+        elif not index_only:
+            # "full" mode
+            provider_name, model = interactive_provider_select(
+                console, model, repo_path=primary_repo.path
+            )
+
+    # Resolve provider once (shared across all repos for generation)
+    provider = None
+    if not index_only:
+        try:
+            provider = resolve_provider(provider_name, model, primary_repo.path)
+            console.print(
+                f"  Provider: [cyan]{provider.provider_name}[/cyan] / "
+                f"Model: [cyan]{provider.model_name}[/cyan]"
+            )
+            console.print(f"  Embedder: [cyan]{embedder_name_resolved}[/cyan]\n")
+        except Exception as exc:
+            console.print(f"  [yellow]Provider setup failed ({exc}); falling back to index-only.[/yellow]")
+            index_only = True
+            provider = None
+
     # Step 3: Create workspace config
     entries = [
         RepoEntry(
@@ -254,10 +495,11 @@ def _workspace_init(
     console.print(f"  [green]\u2713[/green] Created {config_path.name}")
     console.print()
 
-    # Step 4: Index each selected repo (index-only, no LLM cost)
+    # Step 4: Index each selected repo (always generate_docs=False; generation is separate)
     resolved_commit_limit = max(1, min(commit_limit or 500, 5000))
     total_files = 0
     total_symbols = 0
+    total_pages = 0
     errors: list[tuple[str, str]] = []
 
     for i, repo in enumerate(selected, 1):
@@ -271,7 +513,7 @@ def _workspace_init(
                 SpinnerColumn(),
                 TextColumn("[progress.description]{task.description}"),
                 BarColumn(),
-                TextColumn("{task.completed}/{task.total}"),
+                MaybeCountColumn(),
                 TimeElapsedColumn(),
                 console=console,
             ) as progress_bar:
@@ -289,52 +531,110 @@ def _workspace_init(
                     )
                 )
 
-            # Persist to repo-local DB
-            run_async(_persist_result(result, repo.path))
-
-            # Write state.json so `repowise update` knows the base commit
-            head = get_head_commit(repo.path)
-            save_state(
-                repo.path,
-                {
-                    "last_sync_commit": head,
-                    "total_pages": 0,
-                },
-            )
-
-            # Update workspace config with indexing metadata
-            from datetime import datetime, timezone
-
-            entry = ws_config.get_repo(repo.alias)
-            if entry is not None:
-                entry.indexed_at = datetime.now(timezone.utc).isoformat()
-                entry.last_commit_at_index = head
-
-            # MCP config + CLAUDE.md per repo
-            save_mcp_config(repo.path)
-            save_root_mcp_config(repo.path)
-            _maybe_generate_claude_md(console, repo.path, no_claude_md=no_claude_md)
-
             total_files += result.file_count
             total_symbols += result.symbol_count
             console.print(
                 f"    [green]\u2713[/green] {result.file_count} files, "
-                f"{result.symbol_count:,} symbols\n"
+                f"{result.symbol_count:,} symbols"
             )
+
         except Exception as exc:
             errors.append((repo.alias, str(exc)))
             console.print(f"    [red]\u2717 Failed: {exc}[/red]\n")
+            continue
+
+        # Generation phase (per-repo, only when not index-only)
+        if not index_only and provider is not None:
+            if dry_run:
+                console.print("    [yellow]Dry run — skipping generation for this repo.[/yellow]\n")
+            else:
+                try:
+                    generated_pages = _run_workspace_generation(
+                        repo_path=repo.path,
+                        result=result,
+                        provider=provider,
+                        embedder_name_resolved=embedder_name_resolved,
+                        concurrency=concurrency,
+                        yes=yes,
+                        resume=resume,
+                        skip_tests=skip_tests,
+                        skip_infra=skip_infra,
+                        test_run=test_run,
+                    )
+                    result.generated_pages = generated_pages
+                    total_pages += len(generated_pages)
+                    console.print(
+                        f"    [green]\u2713[/green] Generated {len(generated_pages)} pages\n"
+                    )
+                except Exception as gen_exc:
+                    console.print(f"    [yellow]Generation failed: {gen_exc}[/yellow]\n")
+        else:
+            console.print()
+
+        # Persist to repo-local DB
+        run_async(_persist_result(result, repo.path))
+
+        # Write state.json so `repowise update` knows the base commit
+        head = get_head_commit(repo.path)
+        pages_count = len(result.generated_pages or [])
+        state: dict[str, Any] = {
+            "last_sync_commit": head,
+            "total_pages": pages_count,
+        }
+        if not index_only and provider is not None:
+            state["provider"] = provider.provider_name
+            state["model"] = provider.model_name
+        save_state(repo.path, state)
+
+        # Update workspace config with indexing metadata
+        from datetime import datetime, timezone
+
+        entry = ws_config.get_repo(repo.alias)
+        if entry is not None:
+            entry.indexed_at = datetime.now(timezone.utc).isoformat()
+            entry.last_commit_at_index = head
+
+        # MCP config + CLAUDE.md per repo
+        save_mcp_config(repo.path)
+        save_root_mcp_config(repo.path)
+        _maybe_generate_claude_md(console, repo.path, no_claude_md=no_claude_md)
+
+        # Persist provider/model config per-repo when doing full generation
+        if not index_only and provider is not None:
+            save_config(
+                repo.path,
+                provider.provider_name,
+                provider.model_name,
+                embedder_name_resolved,
+                exclude_patterns=exclude_patterns if exclude_patterns else None,
+                commit_limit=resolved_commit_limit,
+            )
 
     # Save workspace config with updated timestamps
     ws_config.save(root)
 
-    # Step 5: Register MCP for primary repo with Claude
+    # Step 5: Cross-repo analysis (co-changes, package deps, contracts)
+    indexed_aliases = [
+        repo.alias for repo in selected
+        if repo.alias not in [e[0] for e in errors]
+    ]
+    if len(indexed_aliases) >= 2:
+        console.print("  Running cross-repo analysis...")
+        try:
+            from repowise.core.workspace.update import run_cross_repo_hooks
+
+            run_async(run_cross_repo_hooks(ws_config, root, indexed_aliases))
+            console.print("  [green]✓[/green] Cross-repo analysis complete")
+        except Exception as exc:
+            console.print(f"  [yellow]⚠ Cross-repo analysis failed: {exc}[/yellow]")
+
+    # Step 6: Register MCP for primary repo with Claude
     primary_entry = ws_config.get_primary()
     if primary_entry:
         primary_path = (root / primary_entry.path).resolve()
         _register_mcp_with_claude(console, primary_path)
 
-    # Step 6: Completion summary
+    # Step 7: Completion summary
     elapsed = time.monotonic() - start
     metrics: list[tuple[str, str]] = [
         ("Repositories", f"{len(selected) - len(errors)} indexed"),
@@ -343,14 +643,24 @@ def _workspace_init(
         ("Primary repo", primary_alias),
         ("Elapsed", format_elapsed(elapsed)),
     ]
+    if not index_only and provider is not None:
+        metrics.insert(3, ("Pages generated", str(total_pages)))
+        metrics.insert(4, ("Provider", f"{provider.provider_name} / {provider.model_name}"))
     if errors:
         metrics.append(("Errors", f"{len(errors)} repos failed"))
 
-    next_steps = [
-        ("repowise mcp <repo-path>", "start MCP server for a repo"),
-        ("repowise status --workspace", "show workspace status"),
-        ("repowise init <repo> --provider gemini", "generate full docs for a repo"),
-    ]
+    if index_only or provider is None:
+        next_steps = [
+            ("repowise mcp <repo-path>", "start MCP server for a repo"),
+            ("repowise status --workspace", "show workspace status"),
+            ("repowise init <repo> --provider gemini", "generate full docs for a repo"),
+        ]
+    else:
+        next_steps = [
+            ("repowise mcp <repo-path>", "start MCP server for a repo"),
+            ("repowise status --workspace", "show workspace status"),
+            ("repowise search <query>", "search across all indexed repos"),
+        ]
 
     console.print()
     console.print(
@@ -507,6 +817,18 @@ def init_command(
             follow_renames=follow_renames,
             no_claude_md=no_claude_md,
             include_submodules=include_submodules,
+            provider_name=provider_name,
+            model=model,
+            embedder_name=embedder_name,
+            index_only=index_only,
+            skip_tests=skip_tests,
+            skip_infra=skip_infra,
+            concurrency=concurrency,
+            test_run=test_run,
+            yes=yes,
+            dry_run=dry_run,
+            resume=resume,
+            force=force,
         )
         return
 
@@ -649,7 +971,7 @@ def init_command(
         SpinnerColumn(),
         TextColumn("[progress.description]{task.description}"),
         BarColumn(),
-        TextColumn("{task.completed}/{task.total}"),
+        MaybeCountColumn(),
         TimeElapsedColumn(),
         TextColumn("[green]${task.fields[cost]:.3f}[/green]"),
         console=console,
@@ -819,7 +1141,7 @@ def init_command(
             SpinnerColumn(),
             TextColumn("[progress.description]{task.description}"),
             BarColumn(),
-            TextColumn("{task.completed}/{task.total}"),
+            MaybeCountColumn(),
             TimeElapsedColumn(),
             TextColumn("[green]${task.fields[cost]:.3f}[/green]"),
             console=console,

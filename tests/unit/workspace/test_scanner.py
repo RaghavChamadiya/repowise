@@ -81,6 +81,26 @@ class TestScanForRepos:
         names = [r.name for r in result.repos]
         assert names == ["alpha", "middle", "zebra"]
 
+    def test_root_is_repo_with_sub_repos(self, tmp_path: Path) -> None:
+        """When root itself is a git repo AND has sub-repos, all are returned."""
+        (tmp_path / ".git").mkdir()  # root is a git repo
+        _make_repo(tmp_path, "backend")
+        _make_repo(tmp_path, "frontend")
+
+        result = scan_for_repos(tmp_path)
+        aliases = {r.alias for r in result.repos}
+        assert len(result.repos) == 3
+        assert tmp_path.name in aliases or "." in aliases or tmp_path.resolve() in {r.path for r in result.repos}
+        assert "backend" in aliases
+        assert "frontend" in aliases
+
+    def test_root_is_repo_no_sub_repos(self, tmp_path: Path) -> None:
+        """When root is a git repo with no sub-repos, single-repo result."""
+        (tmp_path / ".git").mkdir()
+        result = scan_for_repos(tmp_path)
+        assert len(result.repos) == 1
+        assert result.repos[0].path == tmp_path.resolve()
+
     def test_nested_repos_outer_wins(self, tmp_path: Path) -> None:
         """If repo A contains repo B, only A is found (B is not descended into)."""
         outer = _make_repo(tmp_path, "monorepo")

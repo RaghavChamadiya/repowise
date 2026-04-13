@@ -933,6 +933,13 @@ class WorkspaceRepoEntry(BaseModel):
     is_primary: bool = False
     indexed_at: str | None = None
     last_commit_at_index: str | None = None
+    # Per-repo stats (populated from each repo's wiki.db)
+    repo_id: str | None = None
+    file_count: int = 0
+    symbol_count: int = 0
+    page_count: int = 0
+    doc_coverage_pct: float = 0.0
+    hotspot_count: int = 0
 
 
 class WorkspaceCrossRepoSummary(BaseModel):

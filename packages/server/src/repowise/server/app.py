@@ -82,7 +82,27 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     Shutdown: dispose engine, stop scheduler, close vector store.
     """
     # Database
+    # In workspace mode, prefer the primary repo's DB over the global default.
+    # This prevents the global ~/.repowise/wiki.db (which may contain stale
+    # repos from old test runs) from being used as the main DB.
     db_url = resolve_db_url()
+    if not os.environ.get("REPOWISE_DB_URL") and not os.environ.get("REPOWISE_DATABASE_URL"):
+        try:
+            from pathlib import Path as _WsPath
+            from repowise.core.workspace.config import find_workspace_root, WorkspaceConfig
+
+            _ws_root = find_workspace_root()
+            if _ws_root is not None:
+                _ws_cfg = WorkspaceConfig.load(_ws_root)
+                _primary = _ws_cfg.get_primary()
+                _primary_path = _ws_root / (_primary.path if _primary else ".")
+                _primary_db = (_primary_path / ".repowise" / "wiki.db").resolve()
+                if _primary_db.exists():
+                    db_url = f"sqlite+aiosqlite:///{_primary_db.as_posix()}"
+                    logger.info("workspace_primary_db", extra={"db": str(_primary_db)})
+        except Exception:
+            pass  # Fall back to default
+
     engine = create_engine(db_url)
     await init_db(engine)
     session_factory = create_session_factory(engine)
@@ -144,6 +164,8 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     app.state.workspace_config = None
     app.state.workspace_root = None
     app.state.cross_repo_enricher = None
+    app.state.workspace_sessions = {}   # repo_id → session_factory
+    app.state.workspace_engines = []    # engines to dispose on shutdown
 
     try:
         from pathlib import Path as _Path
@@ -159,6 +181,44 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             ws_config = WorkspaceConfig.load(ws_root)
             app.state.workspace_config = ws_config
             app.state.workspace_root = str(ws_root)
+
+            # Create per-repo DB engines so all workspace repos are accessible
+            # via the same REST API (sidebar, repo-specific pages, etc.)
+            import sqlite3 as _sqlite3
+
+            for repo_entry in ws_config.repos:
+                repo_path = (_Path(ws_root) / repo_entry.path).resolve()
+                repo_db = repo_path / ".repowise" / "wiki.db"
+                if not repo_db.exists():
+                    continue
+                # Read repo_id from this DB
+                try:
+                    conn = _sqlite3.connect(str(repo_db))
+                    row = conn.execute("SELECT id FROM repositories LIMIT 1").fetchone()
+                    conn.close()
+                    if not row:
+                        continue
+                    repo_id = row[0]
+                except Exception:
+                    continue
+
+                # Skip if this is the primary DB we already connected to
+                # (the main engine already serves this repo)
+                db_url_posix = repo_db.as_posix()
+                if db_url and db_url_posix in db_url.replace("\\", "/"):
+                    continue
+
+                repo_engine = create_engine(f"sqlite+aiosqlite:///{db_url_posix}")
+                await init_db(repo_engine)
+                repo_sf = create_session_factory(repo_engine)
+                app.state.workspace_sessions[repo_id] = repo_sf
+                app.state.workspace_engines.append(repo_engine)
+
+            if app.state.workspace_sessions:
+                logger.info(
+                    "workspace_repo_dbs_loaded",
+                    extra={"count": len(app.state.workspace_sessions)},
+                )
 
             from repowise.core.workspace.contracts import CONTRACTS_FILENAME
             from repowise.server.mcp_server._enrichment import CrossRepoEnricher
@@ -187,6 +247,12 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # Shutdown
     scheduler.shutdown(wait=False)
     await vector_store.close()
+    # Dispose workspace repo engines first
+    for ws_engine in getattr(app.state, "workspace_engines", []):
+        try:
+            await ws_engine.dispose()
+        except Exception:
+            pass
     await engine.dispose()
     logger.info("repowise_server_stopped")
 
