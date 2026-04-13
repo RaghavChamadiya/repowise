@@ -17,6 +17,8 @@ from typing import Any
 
 import structlog
 
+from repowise.core.ingestion.languages.registry import REGISTRY as _LANG_REGISTRY
+
 logger = structlog.get_logger(__name__)
 
 
@@ -56,24 +58,13 @@ class DeadCodeReport:
 
 
 # Non-code languages that should never be flagged as dead code.
-# These files have no import/export semantics — in_degree=0 is expected and
-# meaningless for them.  Matches the skip lists in git_indexer and page_generator.
+# Derived from the centralised LanguageRegistry — passthrough config/infra
+# languages plus "unknown".
 _NON_CODE_LANGUAGES: frozenset[str] = frozenset(
-    {
-        "json",
-        "yaml",
-        "toml",
-        "markdown",
-        "sql",
-        "shell",
-        "terraform",
-        "proto",
-        "graphql",
-        "dockerfile",
-        "makefile",
-        "unknown",
-    }
-)
+    spec.tag
+    for spec in _LANG_REGISTRY.all_specs()
+    if spec.is_passthrough and (not spec.is_code or spec.is_infra) and spec.tag != "openapi"
+) | {"unknown"}
 
 # Patterns that should never be flagged as dead
 _NEVER_FLAG_PATTERNS = (

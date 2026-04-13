@@ -31,6 +31,7 @@ from pathlib import Path
 import structlog
 from tree_sitter import Language, Node, Parser
 
+from .languages.registry import REGISTRY as _LANG_REGISTRY
 from .models import (
     CallSite,
     FileInfo,
@@ -45,24 +46,17 @@ log = structlog.get_logger(__name__)
 
 QUERIES_DIR = Path(__file__).parent / "queries"
 
-# Languages that intentionally have no AST parser.  These are data, config,
-# markup, or query files — there are no code symbols to extract, and that is
-# expected.  parse_file() returns an empty ParsedFile for them silently.
-# Keep this list in sync with EXTENSION_TO_LANGUAGE in models.py.
+# Languages that intentionally have no AST parser.  Derived from the
+# centralised LanguageRegistry — only non-code passthrough languages are
+# included (not the extra git-blame-only languages).
+
+# Excludes "openapi" (handled by special_handlers) and "unknown".
 _PASSTHROUGH_LANGUAGES: frozenset[str] = frozenset(
-    {
-        "json",
-        "yaml",
-        "toml",
-        "markdown",
-        "sql",
-        "shell",
-        "terraform",
-        "proto",
-        "graphql",
-        "dockerfile",
-        "makefile",
-    }
+    spec.tag
+    for spec in _LANG_REGISTRY.all_specs()
+    if spec.is_passthrough
+    and (not spec.is_code or spec.is_infra)
+    and spec.tag not in ("openapi", "unknown")
 )
 
 # ---------------------------------------------------------------------------
@@ -71,44 +65,44 @@ _PASSTHROUGH_LANGUAGES: frozenset[str] = frozenset(
 
 
 def _build_language_registry() -> dict[str, Language]:
-    """Lazily load installed tree-sitter language packages."""
+    """Lazily load installed tree-sitter language packages.
+
+    Driven by ``LanguageSpec.grammar_package`` / ``grammar_loader`` /
+    ``shares_grammar_with`` from the centralised registry.
+    """
     registry: dict[str, Language] = {}
 
-    def _try_load(tag: str, loader: Callable[[], Language]) -> None:
+    for spec in _LANG_REGISTRY.all_specs():
+        # Languages that share another's grammar (e.g. C → cpp)
+        if spec.shares_grammar_with:
+            shared = registry.get(spec.shares_grammar_with)
+            if shared:
+                registry[spec.tag] = shared
+            continue
+
+        if not spec.grammar_package:
+            continue
+
         try:
-            registry[tag] = loader()
-        except Exception as exc:  # ImportError, AttributeError, …
-            log.debug("tree-sitter language unavailable", language=tag, reason=str(exc))
+            mod = __import__(spec.grammar_package)
+            loader_fn = getattr(mod, spec.grammar_loader)
+            lang_obj = Language(loader_fn())
+            registry[spec.tag] = lang_obj
+        except Exception as exc:
+            log.debug(
+                "tree-sitter language unavailable",
+                language=spec.tag,
+                reason=str(exc),
+            )
 
-    _try_load("python", lambda: Language(__import__("tree_sitter_python").language()))
+    # TypeScript's tsx variant — special case: same package, different loader
+    if "typescript" in registry and "tsx" not in registry:
+        try:
+            import tree_sitter_typescript as _ts_mod
 
-    def _ts() -> None:
-        import tree_sitter_typescript as ts
-
-        registry["typescript"] = Language(ts.language_typescript())
-        registry["tsx"] = Language(ts.language_tsx())
-
-    try:
-        _ts()
-    except Exception as exc:
-        log.debug("tree-sitter language unavailable", language="typescript", reason=str(exc))
-
-    _try_load("javascript", lambda: Language(__import__("tree_sitter_javascript").language()))
-    _try_load("go", lambda: Language(__import__("tree_sitter_go").language()))
-    _try_load("rust", lambda: Language(__import__("tree_sitter_rust").language()))
-    _try_load("java", lambda: Language(__import__("tree_sitter_java").language()))
-
-    def _cpp() -> None:
-        import tree_sitter_cpp as ts_cpp
-
-        lang = Language(ts_cpp.language())
-        registry["cpp"] = lang
-        registry["c"] = lang  # C is a subset of C++ for our purposes
-
-    try:
-        _cpp()
-    except Exception as exc:
-        log.debug("tree-sitter language unavailable", language="cpp", reason=str(exc))
+            registry["tsx"] = Language(_ts_mod.language_tsx())
+        except Exception as exc:
+            log.debug("tree-sitter language unavailable", language="tsx", reason=str(exc))
 
     return registry
 
@@ -622,9 +616,7 @@ class ASTParser:
                 continue
 
             # Language-specific import name + binding extraction
-            imported_names, bindings = _extract_import_bindings(
-                stmt_node, src, file_info.language
-            )
+            imported_names, bindings = _extract_import_bindings(stmt_node, src, file_info.language)
             is_relative = module_text.startswith(".") or module_text.startswith("./")
 
             imports.append(
@@ -929,6 +921,7 @@ def _extract_symbol_docstring(def_node: Node, src: str, lang: str) -> str | None
 
 def _build_signature(node_type: str, name: str, params_text: str, def_node: Node, src: str) -> str:
     """Build a human-readable signature string."""
+
     # Helper: try multiple field names for "return type", fall back gracefully.
     def _ret(fields: tuple[str, ...]) -> str:
         for f in fields:
@@ -1010,9 +1003,7 @@ def _extract_import_bindings(
     return names, bindings
 
 
-def _extract_python_bindings(
-    stmt_node: Node, src: str
-) -> tuple[list[str], list[NamedBinding]]:
+def _extract_python_bindings(stmt_node: Node, src: str) -> tuple[list[str], list[NamedBinding]]:
     """Extract bindings from Python import/import_from statements."""
     names: list[str] = []
     bindings: list[NamedBinding] = []
@@ -1060,9 +1051,7 @@ def _extract_python_bindings(
                 continue
             names.append(bare)
             if is_from_import:
-                bindings.append(
-                    NamedBinding(local_name=bare, exported_name=bare, source_file=None)
-                )
+                bindings.append(NamedBinding(local_name=bare, exported_name=bare, source_file=None))
             else:
                 # import X.Y.Z — module alias
                 bindings.append(
@@ -1077,9 +1066,7 @@ def _extract_python_bindings(
     return names, bindings
 
 
-def _extract_ts_js_bindings(
-    stmt_node: Node, src: str
-) -> tuple[list[str], list[NamedBinding]]:
+def _extract_ts_js_bindings(stmt_node: Node, src: str) -> tuple[list[str], list[NamedBinding]]:
     """Extract bindings from TypeScript/JavaScript import statements."""
     names: list[str] = []
     bindings: list[NamedBinding] = []
@@ -1108,9 +1095,7 @@ def _extract_ts_js_bindings(
                         local = _node_text(alias_node, src) if alias_node else exported
                         names.append(local)
                         bindings.append(
-                            NamedBinding(
-                                local_name=local, exported_name=exported, source_file=None
-                            )
+                            NamedBinding(local_name=local, exported_name=exported, source_file=None)
                         )
             elif sub.type == "namespace_import":
                 # import * as ns from 'mod'
@@ -1137,9 +1122,7 @@ def _extract_ts_js_bindings(
     return names, bindings
 
 
-def _extract_go_bindings(
-    stmt_node: Node, src: str
-) -> tuple[list[str], list[NamedBinding]]:
+def _extract_go_bindings(stmt_node: Node, src: str) -> tuple[list[str], list[NamedBinding]]:
     """Extract bindings from Go import specs."""
     # Go import_spec: optional alias identifier + string literal path
     alias_node = stmt_node.child_by_field_name("name")
@@ -1179,9 +1162,7 @@ def _extract_go_bindings(
     ]
 
 
-def _extract_rust_bindings(
-    stmt_node: Node, src: str
-) -> tuple[list[str], list[NamedBinding]]:
+def _extract_rust_bindings(stmt_node: Node, src: str) -> tuple[list[str], list[NamedBinding]]:
     """Extract bindings from Rust use declarations."""
     arg_node = stmt_node.child_by_field_name("argument")
     if arg_node is None:
@@ -1250,14 +1231,10 @@ def _parse_rust_use_tree(
     bare = text.rsplit("::", 1)[-1]
     if bare and bare != "*":
         names.append(bare)
-        bindings.append(
-            NamedBinding(local_name=bare, exported_name=bare, source_file=None)
-        )
+        bindings.append(NamedBinding(local_name=bare, exported_name=bare, source_file=None))
 
 
-def _extract_java_bindings(
-    stmt_node: Node, src: str
-) -> tuple[list[str], list[NamedBinding]]:
+def _extract_java_bindings(stmt_node: Node, src: str) -> tuple[list[str], list[NamedBinding]]:
     """Extract bindings from Java import declarations."""
     # Java: import com.example.Foo; → local_name="Foo"
     for child in stmt_node.children:
@@ -1265,16 +1242,10 @@ def _extract_java_bindings(
             full = _node_text(child, src)
             local = full.rsplit(".", 1)[-1]
             if local == "*":
-                return ["*"], [
-                    NamedBinding(local_name="*", exported_name=None, source_file=None)
-                ]
-            return [local], [
-                NamedBinding(local_name=local, exported_name=local, source_file=None)
-            ]
+                return ["*"], [NamedBinding(local_name="*", exported_name=None, source_file=None)]
+            return [local], [NamedBinding(local_name=local, exported_name=local, source_file=None)]
         if child.type == "asterisk":
-            return ["*"], [
-                NamedBinding(local_name="*", exported_name=None, source_file=None)
-            ]
+            return ["*"], [NamedBinding(local_name="*", exported_name=None, source_file=None)]
     return [], []
 
 
@@ -1282,20 +1253,12 @@ def _extract_java_bindings(
 # Heritage (inheritance / interface implementation) extraction
 # ---------------------------------------------------------------------------
 
+
 # Maps language → set of node types that can have heritage info
-_HERITAGE_NODE_TYPES: dict[str, frozenset[str]] = {
-    "python": frozenset({"class_definition"}),
-    "typescript": frozenset({"class_declaration", "abstract_class_declaration", "interface_declaration"}),
-    "javascript": frozenset({"class_declaration"}),
-    "java": frozenset({"class_declaration", "interface_declaration", "enum_declaration"}),
-    "go": frozenset({"type_spec"}),
-    "rust": frozenset({"impl_item", "trait_item"}),
-    "cpp": frozenset({"class_specifier", "struct_specifier"}),
-    "c": frozenset(),
-    "kotlin": frozenset({"class_declaration", "object_declaration"}),
-    "ruby": frozenset({"class"}),
-    "csharp": frozenset({"class_declaration", "interface_declaration", "struct_declaration"}),
-}
+# Heritage node types — derived from the centralised LanguageRegistry.
+def _heritage_node_types_for(lang: str) -> frozenset[str]:
+    spec = _LANG_REGISTRY.get(lang)
+    return spec.heritage_node_types if spec else frozenset()
 
 
 def _extract_heritage(
@@ -1314,7 +1277,7 @@ def _extract_heritage(
         return []
 
     lang = file_info.language
-    heritage_types = _HERITAGE_NODE_TYPES.get(lang, frozenset())
+    heritage_types = _heritage_node_types_for(lang)
     if not heritage_types:
         return []
 
@@ -1382,9 +1345,9 @@ def _extract_python_heritage(
         if parent:
             # Strip module prefix for qualified names (e.g., abc.ABC → ABC)
             bare = parent.split(".")[-1]
-            out.append(HeritageRelation(
-                child_name=name, parent_name=bare, kind="extends", line=line
-            ))
+            out.append(
+                HeritageRelation(child_name=name, parent_name=bare, kind="extends", line=line)
+            )
 
 
 def _extract_ts_js_heritage(
@@ -1400,20 +1363,28 @@ def _extract_ts_js_heritage(
                             continue
                         parent = _node_text(type_node, src).strip()
                         if parent:
-                            out.append(HeritageRelation(
-                                child_name=name, parent_name=parent,
-                                kind="extends", line=line,
-                            ))
+                            out.append(
+                                HeritageRelation(
+                                    child_name=name,
+                                    parent_name=parent,
+                                    kind="extends",
+                                    line=line,
+                                )
+                            )
                 elif clause.type == "implements_clause":
                     for type_node in clause.children:
                         if type_node.type in ("implements", ","):
                             continue
                         parent = _node_text(type_node, src).strip()
                         if parent:
-                            out.append(HeritageRelation(
-                                child_name=name, parent_name=parent,
-                                kind="implements", line=line,
-                            ))
+                            out.append(
+                                HeritageRelation(
+                                    child_name=name,
+                                    parent_name=parent,
+                                    kind="implements",
+                                    line=line,
+                                )
+                            )
         # interface extends: interface Foo extends Bar
         if child.type == "extends_type_clause":
             for type_node in child.children:
@@ -1421,10 +1392,14 @@ def _extract_ts_js_heritage(
                     continue
                 parent = _node_text(type_node, src).strip()
                 if parent:
-                    out.append(HeritageRelation(
-                        child_name=name, parent_name=parent,
-                        kind="extends", line=line,
-                    ))
+                    out.append(
+                        HeritageRelation(
+                            child_name=name,
+                            parent_name=parent,
+                            kind="extends",
+                            line=line,
+                        )
+                    )
 
 
 def _extract_java_heritage(
@@ -1437,10 +1412,14 @@ def _extract_java_heritage(
         # Strip 'extends' keyword if captured
         parent = parent.removeprefix("extends").strip()
         if parent:
-            out.append(HeritageRelation(
-                child_name=name, parent_name=parent.split(".")[-1],
-                kind="extends", line=line,
-            ))
+            out.append(
+                HeritageRelation(
+                    child_name=name,
+                    parent_name=parent.split(".")[-1],
+                    kind="extends",
+                    line=line,
+                )
+            )
 
     interfaces = def_node.child_by_field_name("interfaces")
     if interfaces:
@@ -1451,18 +1430,31 @@ def _extract_java_heritage(
                         if type_node.type != ",":
                             parent = _node_text(type_node, src).strip().split(".")[-1]
                             if parent:
-                                kind = "implements" if def_node.type == "class_declaration" else "extends"
-                                out.append(HeritageRelation(
-                                    child_name=name, parent_name=parent,
-                                    kind=kind, line=line,
-                                ))
+                                kind = (
+                                    "implements"
+                                    if def_node.type == "class_declaration"
+                                    else "extends"
+                                )
+                                out.append(
+                                    HeritageRelation(
+                                        child_name=name,
+                                        parent_name=parent,
+                                        kind=kind,
+                                        line=line,
+                                    )
+                                )
                 continue
             parent = _node_text(child, src).strip().split(".")[-1]
             if parent and parent not in ("implements", "extends"):
                 kind = "implements" if def_node.type == "class_declaration" else "extends"
-                out.append(HeritageRelation(
-                    child_name=name, parent_name=parent, kind=kind, line=line,
-                ))
+                out.append(
+                    HeritageRelation(
+                        child_name=name,
+                        parent_name=parent,
+                        kind=kind,
+                        line=line,
+                    )
+                )
 
 
 def _extract_go_heritage(
@@ -1489,10 +1481,14 @@ def _extract_go_heritage(
                 parent = _node_text(type_child, src).strip().lstrip("*")
                 bare = parent.split(".")[-1]
                 if bare:
-                    out.append(HeritageRelation(
-                        child_name=name, parent_name=bare,
-                        kind="mixin", line=line,
-                    ))
+                    out.append(
+                        HeritageRelation(
+                            child_name=name,
+                            parent_name=bare,
+                            kind="mixin",
+                            line=line,
+                        )
+                    )
 
     elif type_node.type == "interface_type":
         # Interface embedding: interface { io.Reader }
@@ -1504,10 +1500,14 @@ def _extract_go_heritage(
                 parent = _node_text(child, src).strip()
                 bare = parent.split(".")[-1]
                 if bare:
-                    out.append(HeritageRelation(
-                        child_name=name, parent_name=bare,
-                        kind="extends", line=line,
-                    ))
+                    out.append(
+                        HeritageRelation(
+                            child_name=name,
+                            parent_name=bare,
+                            kind="extends",
+                            line=line,
+                        )
+                    )
 
 
 def _extract_rust_heritage(
@@ -1522,10 +1522,14 @@ def _extract_rust_heritage(
             trait_name = _node_text(trait_node, src).strip().rsplit("::", 1)[-1]
             type_name = _node_text(type_node, src).strip()
             if trait_name and type_name:
-                out.append(HeritageRelation(
-                    child_name=type_name, parent_name=trait_name,
-                    kind="trait_impl", line=line,
-                ))
+                out.append(
+                    HeritageRelation(
+                        child_name=type_name,
+                        parent_name=trait_name,
+                        kind="trait_impl",
+                        line=line,
+                    )
+                )
 
     elif def_node.type == "trait_item":
         # trait Foo: Bar + Baz (supertrait bounds)
@@ -1536,10 +1540,14 @@ def _extract_rust_heritage(
                     continue
                 parent = _node_text(child, src).strip().rsplit("::", 1)[-1]
                 if parent:
-                    out.append(HeritageRelation(
-                        child_name=name, parent_name=parent,
-                        kind="extends", line=line,
-                    ))
+                    out.append(
+                        HeritageRelation(
+                            child_name=name,
+                            parent_name=parent,
+                            kind="extends",
+                            line=line,
+                        )
+                    )
 
 
 def _extract_cpp_heritage(
@@ -1558,10 +1566,14 @@ def _extract_cpp_heritage(
                     text = text.removeprefix(prefix).strip()
                 bare = text.split("::")[-1].strip()
                 if bare:
-                    out.append(HeritageRelation(
-                        child_name=name, parent_name=bare,
-                        kind="extends", line=line,
-                    ))
+                    out.append(
+                        HeritageRelation(
+                            child_name=name,
+                            parent_name=bare,
+                            kind="extends",
+                            line=line,
+                        )
+                    )
 
 
 def _extract_kotlin_heritage(
@@ -1575,10 +1587,14 @@ def _extract_kotlin_heritage(
                 # Remove constructor call parens
                 bare = text.split("(")[0].split(".")[-1].strip()
                 if bare and bare != name:
-                    out.append(HeritageRelation(
-                        child_name=name, parent_name=bare,
-                        kind="extends", line=line,
-                    ))
+                    out.append(
+                        HeritageRelation(
+                            child_name=name,
+                            parent_name=bare,
+                            kind="extends",
+                            line=line,
+                        )
+                    )
         elif child.type == "delegation_specifiers":
             for delegate in child.children:
                 if delegate.type in (":", ","):
@@ -1586,10 +1602,14 @@ def _extract_kotlin_heritage(
                 text = _node_text(delegate, src).strip()
                 bare = text.split("(")[0].split(".")[-1].strip()
                 if bare and bare != name:
-                    out.append(HeritageRelation(
-                        child_name=name, parent_name=bare,
-                        kind="extends", line=line,
-                    ))
+                    out.append(
+                        HeritageRelation(
+                            child_name=name,
+                            parent_name=bare,
+                            kind="extends",
+                            line=line,
+                        )
+                    )
 
 
 def _extract_ruby_heritage(
@@ -1603,9 +1623,14 @@ def _extract_ruby_heritage(
         parent = parent.removeprefix("<").strip()
         bare = parent.split("::")[-1]
         if bare:
-            out.append(HeritageRelation(
-                child_name=name, parent_name=bare, kind="extends", line=line,
-            ))
+            out.append(
+                HeritageRelation(
+                    child_name=name,
+                    parent_name=bare,
+                    kind="extends",
+                    line=line,
+                )
+            )
 
 
 def _extract_csharp_heritage(
@@ -1621,10 +1646,19 @@ def _extract_csharp_heritage(
                 bare = text.split(".")[-1].split("<")[0].strip()
                 if bare and bare != name:
                     # Convention: interfaces start with I
-                    kind = "implements" if bare.startswith("I") and len(bare) > 1 and bare[1].isupper() else "extends"
-                    out.append(HeritageRelation(
-                        child_name=name, parent_name=bare, kind=kind, line=line,
-                    ))
+                    kind = (
+                        "implements"
+                        if bare.startswith("I") and len(bare) > 1 and bare[1].isupper()
+                        else "extends"
+                    )
+                    out.append(
+                        HeritageRelation(
+                            child_name=name,
+                            parent_name=bare,
+                            kind=kind,
+                            line=line,
+                        )
+                    )
 
 
 _HERITAGE_EXTRACTORS: dict[str, Callable[..., None]] = {
