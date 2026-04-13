@@ -1,11 +1,13 @@
 """``repowise augment`` — hook-driven context enrichment for AI coding agents.
 
 Reads a Claude Code hook payload from stdin (JSON), queries the local wiki.db
-for graph context (importers, dependencies, symbols), and writes enriched
-context back to stdout as the hook response.
+for graph context (importers, symbols), and writes enriched context back to
+stdout as the hook response.
 
-Also handles PostToolUse events: detects git commits and notifies the agent
-when the wiki is stale.
+PreToolUse: enriches Grep/Glob calls with up to 3 related files, their key
+symbols, importers, and dependencies.
+
+PostToolUse: detects git commits and notifies the agent when the wiki is stale.
 
 Design goals:
   - Cold start < 500ms (lazy imports, minimal work)
@@ -49,7 +51,7 @@ def _run_augment() -> None:
     tool_input = payload.get("tool_input", {})
     cwd = payload.get("cwd", "")
 
-    if event == "PreToolUse" and tool_name in ("Grep", "Glob", "Bash"):
+    if event == "PreToolUse" and tool_name in ("Grep", "Glob"):
         result = _handle_pre_tool_use(tool_name, tool_input, cwd)
         if result:
             _emit_response(event, result)
@@ -80,22 +82,8 @@ def _emit_response(event: str, context: str) -> None:
 
 def _extract_search_pattern(tool_name: str, tool_input: dict) -> str | None:
     """Extract the search pattern from the tool input."""
-    if tool_name == "Grep":
+    if tool_name in ("Grep", "Glob"):
         return tool_input.get("pattern")
-    if tool_name == "Glob":
-        return tool_input.get("pattern")
-    if tool_name == "Bash":
-        cmd = tool_input.get("command", "")
-        # Only augment grep/rg/find commands, not arbitrary bash
-        import re
-
-        m = re.search(r"\b(?:grep|rg|find|ag|ack)\b.*?['\"]([^'\"]+)['\"]", cmd)
-        if m:
-            return m.group(1)
-        # Also match: grep pattern (unquoted, first non-flag arg)
-        m = re.search(r"\b(?:grep|rg)\s+(?:-\S+\s+)*(\S+)", cmd)
-        if m and not m.group(1).startswith("-"):
-            return m.group(1)
     return None
 
 
@@ -117,14 +105,30 @@ def _handle_pre_tool_use(tool_name: str, tool_input: dict, cwd: str) -> str | No
 
 
 async def _query_graph_context(repo_path: "Path", pattern: str) -> str | None:
-    """Run FTS + graph queries and format the enrichment context."""
-    from pathlib import Path as _Path
+    """Multi-signal search + graph enrichment.
+
+    Phase 1 — find relevant files via three signals (merged, deduped):
+      a) Symbol name match (wiki_symbols.name LIKE pattern)
+      b) File path match (graph_nodes.node_id LIKE pattern)
+      c) FTS on wiki page content (fallback for conceptual queries)
+    Results ranked by how many signals matched, then by PageRank.
+
+    Phase 2 — enrich top 3 files with symbols, importers, dependencies.
+    """
+    import re
 
     from repowise.core.persistence import (
         FullTextSearch,
+        GraphEdge,
+        GraphNode,
+        WikiSymbol,
         create_engine,
+        create_session_factory,
+        get_session,
     )
+    from repowise.core.persistence.crud import get_repository_by_path
     from repowise.core.persistence.database import resolve_db_url
+    from sqlalchemy import select
 
     db_path = repo_path / ".repowise" / "wiki.db"
     if not db_path.exists():
@@ -134,62 +138,6 @@ async def _query_graph_context(repo_path: "Path", pattern: str) -> str | None:
     engine = create_engine(url)
 
     try:
-        # Phase 1: FTS search to find relevant files
-        fts = FullTextSearch(engine)
-        try:
-            results = await fts.search(pattern, limit=5)
-        except Exception:
-            results = []
-
-        if not results:
-            # Fallback: try matching graph nodes by path pattern
-            results = await _search_nodes_by_path(engine, repo_path, pattern)
-            if not results:
-                return None
-
-        # Collect file paths from search results — prefer file-level pages
-        file_paths = []
-        for r in results:
-            target = getattr(r, "target_path", None) or getattr(r, "node_id", None)
-            if not target:
-                continue
-            # Skip non-file pages — they don't map to graph nodes
-            page_type = getattr(r, "page_type", "")
-            if page_type and page_type not in ("file", "file_page", "infra_page", "api_contract"):
-                continue
-            # Symbol spotlight pages have target_path like "file.py::SymbolName"
-            if "::" in target:
-                target = target.split("::")[0]
-            file_paths.append(target)
-
-        # Deduplicate while preserving order
-        seen: set[str] = set()
-        unique_paths = []
-        for fp in file_paths:
-            if fp not in seen:
-                seen.add(fp)
-                unique_paths.append(fp)
-        file_paths = unique_paths[:5]
-
-        if not file_paths:
-            # All FTS results were module-level — try path-based fallback
-            results = await _search_nodes_by_path(engine, repo_path, pattern)
-            file_paths = [r.node_id for r in results if hasattr(r, "node_id")][:5]
-
-        if not file_paths:
-            return None
-
-        # Phase 2: Batch graph queries for importers, dependencies, and symbols
-        from repowise.core.persistence import (
-            GraphEdge,
-            GraphNode,
-            WikiSymbol,
-            create_session_factory,
-            get_session,
-        )
-        from repowise.core.persistence.crud import get_repository_by_path
-        from sqlalchemy import select
-
         sf = create_session_factory(engine)
         async with get_session(sf) as session:
             repo = await get_repository_by_path(session, str(repo_path))
@@ -197,10 +145,94 @@ async def _query_graph_context(repo_path: "Path", pattern: str) -> str | None:
                 return None
             repo_id = repo.id
 
-            # Importers: who imports these files? (limit 3 per file)
+            # Clean pattern for SQL LIKE — strip regex syntax
+            clean = re.sub(r"[^\w/._-]", "", pattern)
+
+            # Track how many signals each file matched + its PageRank
+            file_scores: dict[str, float] = {}  # path -> score
+            file_ranks: dict[str, float] = {}  # path -> pagerank
+
+            # Signal 1: symbol name match — most precise
+            if clean:
+                sym_stmt = (
+                    select(WikiSymbol.file_path)
+                    .where(
+                        WikiSymbol.repository_id == repo_id,
+                        WikiSymbol.name.like(f"%{clean}%"),
+                    )
+                    .distinct()
+                    .limit(5)
+                )
+                sym_result = await session.execute(sym_stmt)
+                for (fp,) in sym_result.all():
+                    file_scores[fp] = file_scores.get(fp, 0) + 2.0
+
+            # Signal 2: file path match
+            if clean:
+                path_stmt = (
+                    select(GraphNode.node_id, GraphNode.pagerank)
+                    .where(
+                        GraphNode.repository_id == repo_id,
+                        GraphNode.node_type == "file",
+                        GraphNode.node_id.like(f"%{clean}%"),
+                    )
+                    .order_by(GraphNode.pagerank.desc())
+                    .limit(5)
+                )
+                path_result = await session.execute(path_stmt)
+                for node_id, pr in path_result.all():
+                    file_scores[node_id] = file_scores.get(node_id, 0) + 1.5
+                    file_ranks[node_id] = pr
+
+            # Signal 3: FTS on wiki content — broadest, lowest weight
+            fts = FullTextSearch(engine)
+            try:
+                fts_results = await fts.search(pattern, limit=5)
+            except Exception:
+                fts_results = []
+
+            for r in fts_results:
+                target = getattr(r, "target_path", None) or ""
+                page_type = getattr(r, "page_type", "")
+                if page_type and page_type not in (
+                    "file", "file_page", "infra_page", "api_contract",
+                ):
+                    continue
+                if "::" in target:
+                    target = target.split("::")[0]
+                if target:
+                    file_scores[target] = file_scores.get(target, 0) + 1.0
+
+            if not file_scores:
+                return None
+
+            # Fetch PageRank for files we don't have it for yet
+            missing_pr = [fp for fp in file_scores if fp not in file_ranks]
+            if missing_pr:
+                pr_stmt = select(GraphNode.node_id, GraphNode.pagerank).where(
+                    GraphNode.repository_id == repo_id,
+                    GraphNode.node_type == "file",
+                    GraphNode.node_id.in_(missing_pr),
+                )
+                pr_result = await session.execute(pr_stmt)
+                for node_id, pr in pr_result.all():
+                    file_ranks[node_id] = pr
+
+            # Rank: primary by signal score, secondary by PageRank
+            ranked = sorted(
+                file_scores.keys(),
+                key=lambda fp: (file_scores[fp], file_ranks.get(fp, 0)),
+                reverse=True,
+            )
+            file_paths = ranked[:3]
+
+            # Phase 2: enrich with symbols, importers, dependencies
+
+            # Importers: who uses these files? (limit 3 per file)
             importers_stmt = select(GraphEdge).where(
                 GraphEdge.repository_id == repo_id,
                 GraphEdge.target_node_id.in_(file_paths),
+                GraphEdge.edge_type == "imports",
             )
             importers_result = await session.execute(importers_stmt)
             importers_by_file: dict[str, list[str]] = {}
@@ -209,19 +241,20 @@ async def _query_graph_context(repo_path: "Path", pattern: str) -> str | None:
                 if len(lst) < 3:
                     lst.append(edge.source_node_id)
 
-            # Dependencies: what do these files import?
+            # Dependencies: what does this file use? (limit 2 per file)
             deps_stmt = select(GraphEdge).where(
                 GraphEdge.repository_id == repo_id,
                 GraphEdge.source_node_id.in_(file_paths),
+                GraphEdge.edge_type == "imports",
             )
             deps_result = await session.execute(deps_stmt)
             deps_by_file: dict[str, list[str]] = {}
             for edge in deps_result.scalars().all():
                 lst = deps_by_file.setdefault(edge.source_node_id, [])
-                if len(lst) < 3:
+                if len(lst) < 2:
                     lst.append(edge.target_node_id)
 
-            # Symbols: key symbols in these files
+            # Symbols: key symbols (limit 3 per file)
             symbols_stmt = (
                 select(WikiSymbol)
                 .where(
@@ -234,58 +267,27 @@ async def _query_graph_context(repo_path: "Path", pattern: str) -> str | None:
             symbols_by_file: dict[str, list] = {}
             for sym in symbols_result.scalars().all():
                 lst = symbols_by_file.setdefault(sym.file_path, [])
-                if len(lst) < 5:
+                if len(lst) < 3:
                     lst.append(sym)
 
-            # Hotspot info (best-effort — DB schema may not have all columns)
-            git_by_file: dict = {}
-            try:
-                from repowise.core.persistence.models import GitMetadata
-
-                git_stmt = select(GitMetadata).where(
-                    GitMetadata.repository_id == repo_id,
-                    GitMetadata.file_path.in_(file_paths),
-                )
-                git_result = await session.execute(git_stmt)
-                for gm in git_result.scalars().all():
-                    git_by_file[gm.file_path] = gm
-            except Exception:
-                pass  # git metadata is optional enrichment
-
-        # Phase 3: Format the enrichment text
+        # Phase 3: Format
         lines = [f"[repowise] {len(file_paths)} related file(s) found:\n"]
 
-        for fp in file_paths[:5]:
+        for fp in file_paths:
             lines.append(f"  {fp}")
 
-            # Symbols
             syms = symbols_by_file.get(fp, [])
             if syms:
                 sym_strs = [f"{s.kind}:{s.name}" for s in syms]
                 lines.append(f"    Symbols: {', '.join(sym_strs)}")
 
-            # Importers
             imps = importers_by_file.get(fp, [])
             if imps:
                 lines.append(f"    Imported by: {', '.join(imps)}")
 
-            # Dependencies
             deps = deps_by_file.get(fp, [])
             if deps:
-                lines.append(f"    Depends on: {', '.join(deps)}")
-
-            # Git signals
-            gm = git_by_file.get(fp)
-            if gm:
-                signals = []
-                if gm.is_hotspot:
-                    signals.append("HOTSPOT")
-                if gm.bus_factor and gm.bus_factor <= 1:
-                    signals.append(f"bus-factor={gm.bus_factor}")
-                if gm.primary_owner_name:
-                    signals.append(f"owner={gm.primary_owner_name}")
-                if signals:
-                    lines.append(f"    Git: {', '.join(signals)}")
+                lines.append(f"    Uses: {', '.join(deps)}")
 
             lines.append("")
 
@@ -293,41 +295,6 @@ async def _query_graph_context(repo_path: "Path", pattern: str) -> str | None:
 
     finally:
         await engine.dispose()
-
-
-async def _search_nodes_by_path(engine, repo_path: "Path", pattern: str) -> list:
-    """Fallback: search GraphNode.node_id by LIKE pattern."""
-    from repowise.core.persistence import (
-        GraphNode,
-        create_session_factory,
-        get_session,
-    )
-    from repowise.core.persistence.crud import get_repository_by_path
-    from sqlalchemy import select
-
-    sf = create_session_factory(engine)
-    async with get_session(sf) as session:
-        repo = await get_repository_by_path(session, str(repo_path))
-        if repo is None:
-            return []
-        # Clean pattern for LIKE query: strip regex chars, use as substring
-        import re
-
-        clean = re.sub(r"[^\w/._-]", "", pattern)
-        if not clean:
-            return []
-
-        stmt = (
-            select(GraphNode)
-            .where(
-                GraphNode.repository_id == repo.id,
-                GraphNode.node_id.like(f"%{clean}%"),
-            )
-            .order_by(GraphNode.pagerank.desc())
-            .limit(5)
-        )
-        result = await session.execute(stmt)
-        return list(result.scalars().all())
 
 
 # ---------------------------------------------------------------------------

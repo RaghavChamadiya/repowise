@@ -135,7 +135,7 @@ def install_claude_code_hooks() -> Path | None:
     """Register PreToolUse and PostToolUse hooks in ~/.claude/settings.json.
 
     PreToolUse: enriches Grep/Glob searches with graph context (importers,
-    dependencies, symbols) from the local wiki.db.
+    symbols) from the local wiki.db.
 
     PostToolUse: detects git commits and notifies the agent when the wiki
     is stale.
