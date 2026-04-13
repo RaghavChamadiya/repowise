@@ -38,6 +38,21 @@ def refine_go_type_kind(type_spec_node: Node, src: str) -> str:
     return "type_alias"
 
 
+def refine_kotlin_class_kind(class_node: Node) -> str:
+    """Refine 'class' kind for Kotlin class_declaration nodes.
+
+    In tree-sitter-kotlin v1.x, interfaces and enum classes all use
+    ``class_declaration`` — the keyword child (``class``, ``interface``,
+    ``enum``) distinguishes them.
+    """
+    for child in class_node.children:
+        if child.type == "interface":
+            return "interface"
+        if child.type == "enum":
+            return "enum"
+    return "class"
+
+
 def clean_string_literal(text: str) -> str:
     """Strip quote characters from a Python string literal."""
     text = text.strip()

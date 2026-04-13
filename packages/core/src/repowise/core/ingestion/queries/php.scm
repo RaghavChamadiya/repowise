@@ -29,6 +29,12 @@
   parameters: (formal_parameters) @symbol.params
 ) @symbol.def
 
+; Fallback: methods without explicit visibility (defaults to public in PHP)
+(method_declaration
+  name: (name) @symbol.name
+  parameters: (formal_parameters) @symbol.params
+) @symbol.def
+
 (function_definition
   name: (name) @symbol.name
   parameters: (formal_parameters) @symbol.params

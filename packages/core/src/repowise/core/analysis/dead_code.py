@@ -435,21 +435,24 @@ class DeadCodeAnalyzer:
             if self._should_never_flag(str(node), whitelist):
                 continue
 
-            # Get symbols for this file from graph node data
-            symbols = node_data.get("symbols", [])
+            # Get symbols defined in this file via DEFINES edges to symbol nodes
+            symbols = [
+                self.graph.nodes[succ]
+                for succ in self.graph.successors(node)
+                if self.graph.nodes[succ].get("node_type") == "symbol"
+                and self.graph.get_edge_data(node, succ, {}).get("edge_type") == "defines"
+            ]
             if not symbols:
                 continue
 
             file_has_importers = self.graph.in_degree(node) > 0
 
             for sym in symbols:
-                if not isinstance(sym, dict):
-                    continue
                 if sym.get("visibility") != "public":
                     continue
                 sym_name = sym.get("name", "")
 
-                # Skip framework decorators
+                # Skip framework decorators (if stored on symbol node)
                 decorators = sym.get("decorators", [])
                 if any(
                     d.startswith(prefix) for d in decorators for prefix in _FRAMEWORK_DECORATORS
@@ -485,8 +488,7 @@ class DeadCodeAnalyzer:
                 else:
                     confidence = 0.7
 
-                complexity = sym.get("complexity_estimate", 0)
-                safe = confidence >= 0.7 and complexity < 5
+                safe = confidence >= 0.7
 
                 git_meta = self.git_meta_map.get(str(node), {})
 

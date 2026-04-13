@@ -40,6 +40,7 @@ from .extractors import (
     extract_symbol_docstring,
     node_text,
     refine_go_type_kind,
+    refine_kotlin_class_kind,
 )
 from .extractors.visibility import (
     csharp_visibility,
@@ -570,6 +571,10 @@ class ASTParser:
             # Refine "struct" kind for Go type_spec (check if struct or interface body)
             if kind == "struct" and config.parent_extraction == "receiver":
                 kind = refine_go_type_kind(def_node, src)
+
+            # Refine "class" kind for Kotlin (interface / enum class share class_declaration)
+            if kind == "class" and file_info.language == "kotlin" and def_node.type == "class_declaration":
+                kind = refine_kotlin_class_kind(def_node)
 
             # Params signature text
             params_text = _node_text(params_nodes[0], src) if params_nodes else ""
