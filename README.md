@@ -98,7 +98,7 @@ repowise init        # builds all four intelligence layers (~25 min first time)
 repowise serve       # starts MCP server + local dashboard
 ```
 
-That's it. `repowise init` automatically registers the MCP server, installs PreToolUse/PostToolUse hooks in `~/.claude/settings.json`, and generates `.mcp.json` at the project root.
+That's it. `repowise init` automatically registers the MCP server, installs PreToolUse/PostToolUse hooks in `~/.claude/settings.json`, generates `.mcp.json` at the project root, and offers to install a post-commit git hook that keeps everything in sync after every commit.
 
 To manually add the MCP server to another editor:
 
@@ -113,7 +113,7 @@ To manually add the MCP server to another editor:
 }
 ```
 
-> **Note on init time:** Initial indexing analyzes your entire codebase — AST parsing, 500-commit git history, LLM doc generation, embedding indexing, and decision archaeology. This is a one-time cost (~25 minutes for a 3,000-file project). Every subsequent update after a commit takes under 30 seconds.
+> **Note on init time:** Initial indexing analyzes your entire codebase — AST parsing, 500-commit git history, LLM doc generation, embedding indexing, and decision archaeology. This is a one-time cost (~25 minutes for a 3,000-file project). Every subsequent update after a commit takes under 30 seconds and only regenerates the few pages affected by your changes.
 
 ---
 
@@ -397,13 +397,22 @@ Hosted adds what only makes sense in a managed, multi-user environment:
 
 ```bash
 # Core
-repowise init [PATH]              # index codebase (one-time)
+repowise init [PATH]              # index codebase (one-time, offers hook setup)
 repowise init --index-only        # graph + git + dead code, no LLM, no cost
 repowise init -x vendor/ -x proto/  # exclude patterns (gitignore syntax)
 repowise init --include-submodules   # include git submodule directories
 repowise update [PATH]            # incremental update (<30 seconds)
+repowise update --workspace       # update all stale repos in workspace
+repowise update --repo backend    # update a specific workspace repo
 repowise serve [PATH]             # MCP server + local dashboard
 repowise watch [PATH]             # auto-update on file save
+repowise watch --workspace        # auto-update all workspace repos
+
+# Auto-sync hooks
+repowise hook install             # install post-commit hook (current repo)
+repowise hook install --workspace # install for all workspace repos
+repowise hook status              # check if hooks are installed
+repowise hook uninstall           # remove hooks
 
 # Query
 repowise query "<question>"       # ask anything from the terminal
@@ -433,7 +442,7 @@ repowise decision health          # stale, conflicts, ungoverned hotspots
 # Editor files
 repowise generate-claude-md       # regenerate CLAUDE.md
 
-# Hooks (auto-installed by init — not meant to be called manually)
+# Proactive hooks (auto-installed by init — not called manually)
 repowise augment                  # enriches agent tool calls with graph context
 
 # Utilities

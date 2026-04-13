@@ -39,6 +39,9 @@ class CrossRepoEnricher:
         self._contract_provider_index: dict[tuple[str, str], list[dict]] = defaultdict(list)
         self._contract_consumer_index: dict[tuple[str, str], list[dict]] = defaultdict(list)
 
+        self._data_path = data_path
+        self._contracts_path = contracts_path
+
         self._load(data_path)
         if contracts_path is not None:
             self._load_contracts(contracts_path)
@@ -148,6 +151,36 @@ class CrossRepoEnricher:
         _log.debug(
             "Contract enricher loaded: %d contracts, %d links",
             len(self._contracts),
+            len(self._contract_links),
+        )
+
+    def reload(self) -> None:
+        """Re-read JSON files from disk and rebuild all indexes.
+
+        Call after cross-repo analysis writes new data so the running
+        server serves fresh results without a restart.
+        """
+        # Reset all state
+        self._co_changes = []
+        self._package_deps = []
+        self._repo_summaries = {}
+        self._co_change_index = defaultdict(list)
+        self._consumer_index = defaultdict(list)
+        self._package_dep_index = defaultdict(list)
+        self._package_dep_reverse = defaultdict(list)
+        self._contracts = []
+        self._contract_links = []
+        self._contract_provider_index = defaultdict(list)
+        self._contract_consumer_index = defaultdict(list)
+
+        self._load(self._data_path)
+        if self._contracts_path is not None:
+            self._load_contracts(self._contracts_path)
+
+        _log.info(
+            "Cross-repo enricher reloaded: %d co-change edges, %d package deps, %d contract links",
+            len(self._co_changes),
+            len(self._package_deps),
             len(self._contract_links),
         )
 

@@ -167,12 +167,28 @@ async def get_repo_stats(
     )
     dead_export_count = dead_result.scalar_one() or 0
 
+    # Compute true freshness score from actual page freshness statuses
+    total_pages_result = await session.execute(
+        select(func.count(Page.id)).where(Page.repository_id == repo_id)
+    )
+    total_pages = total_pages_result.scalar_one() or 0
+
+    fresh_pages_result = await session.execute(
+        select(func.count(Page.id)).where(
+            Page.repository_id == repo_id,
+            Page.freshness_status == "fresh",
+        )
+    )
+    fresh_pages = fresh_pages_result.scalar_one() or 0
+
+    freshness_score = (fresh_pages / total_pages * 100) if total_pages > 0 else doc_coverage_pct
+
     return RepoStatsResponse(
         file_count=file_count,
         symbol_count=symbol_count,
         entry_point_count=entry_point_count,
         doc_coverage_pct=doc_coverage_pct,
-        freshness_score=doc_coverage_pct,
+        freshness_score=freshness_score,
         dead_export_count=dead_export_count,
     )
 

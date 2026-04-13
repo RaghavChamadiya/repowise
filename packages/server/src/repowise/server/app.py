@@ -139,17 +139,17 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     embedder = _build_embedder()
     vector_store = InMemoryVectorStore(embedder=embedder)
 
-    # Background scheduler
-    scheduler = setup_scheduler(session_factory)
-    scheduler.start()
-
-    # Store on app state
+    # Store on app state (before scheduler, so scheduler can reference app_state)
     app.state.engine = engine
     app.state.session_factory = session_factory
     app.state.fts = fts
     app.state.vector_store = vector_store
-    app.state.scheduler = scheduler
     app.state.background_tasks: set = set()  # Strong refs to prevent GC of asyncio tasks
+
+    # Background scheduler (pass app.state so polling can launch jobs)
+    scheduler = setup_scheduler(session_factory, app_state=app.state)
+    scheduler.start()
+    app.state.scheduler = scheduler
 
     # Initialize chat tool state (bridges FastAPI state to MCP tool globals)
     from repowise.server.chat_tools import init_tool_state

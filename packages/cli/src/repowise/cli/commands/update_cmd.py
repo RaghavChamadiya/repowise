@@ -284,6 +284,21 @@ def update_command(
 
     provider = resolve_provider(provider_name, model, repo_path=repo_path)
 
+    # Run partial dead code analysis on affected files
+    dead_code_report = None
+    try:
+        from repowise.core.analysis.dead_code import DeadCodeAnalyzer
+
+        analyzer = DeadCodeAnalyzer(graph_builder.graph(), git_meta_map)
+        changed_paths = [fd.path for fd in file_diffs]
+        dead_code_report = analyzer.analyze_partial(changed_paths)
+        if dead_code_report.total_findings:
+            console.print(
+                f"Dead code findings (partial): [yellow]{dead_code_report.total_findings}[/yellow]"
+            )
+    except Exception as exc:
+        console.print(f"[yellow]Dead code analysis skipped: {exc}[/yellow]")
+
     # Re-scan changed files for inline decision markers
     new_decision_markers: list = []
     try:
@@ -392,6 +407,43 @@ def update_command(
         except Exception:
             pass  # never fail update due to decision processing
 
+        # Persist dead code findings (partial)
+        if dead_code_report and dead_code_report.findings:
+            try:
+                import dataclasses as _dc_dead
+
+                from repowise.core.persistence.crud import save_dead_code_findings
+
+                async with get_session(sf) as session:
+                    await save_dead_code_findings(
+                        session,
+                        repo_id,
+                        [_dc_dead.asdict(f) for f in dead_code_report.findings],
+                    )
+            except Exception:
+                pass  # dead code persistence is best-effort
+
+        # Record a GenerationJob so the web UI "last synced" timestamp updates
+        try:
+            from datetime import datetime, UTC as _UTC
+            from repowise.core.persistence.crud import upsert_generation_job
+
+            async with get_session(sf) as session:
+                now = datetime.now(_UTC)
+                page_count = len(generated_pages)
+                job = await upsert_generation_job(
+                    session,
+                    repository_id=repo_id,
+                    status="completed",
+                    total_pages=page_count,
+                    config={"mode": "incremental", "source": "cli_update"},
+                )
+                job.completed_pages = page_count
+                job.started_at = now
+                job.finished_at = now
+        except Exception:
+            pass  # job recording is best-effort
+
         fts = FullTextSearch(engine)
         await fts.ensure_index()
         for page in generated_pages:
@@ -442,6 +494,29 @@ def update_command(
     state["last_sync_commit"] = head
     state["total_pages"] = state.get("total_pages", 0) + len(generated_pages)
     save_state(repo_path, state)
+
+    # Trigger cross-repo hooks if this repo is part of a workspace
+    try:
+        ws_root = find_workspace_root(repo_path)
+        if ws_root is not None:
+            from repowise.core.workspace import WorkspaceConfig
+            from repowise.core.workspace.update import run_cross_repo_hooks
+
+            ws_config = WorkspaceConfig.load(ws_root)
+            # Find this repo's alias in the workspace config
+            from pathlib import Path as _P
+            repo_abs = repo_path.resolve()
+            alias = None
+            for entry in ws_config.repos:
+                if (ws_root / entry.path).resolve() == repo_abs:
+                    alias = entry.alias
+                    break
+            if alias and len(ws_config.repos) >= 2:
+                console.print("Running cross-repo analysis...")
+                run_async(run_cross_repo_hooks(ws_config, ws_root, [alias]))
+                console.print("[green]Cross-repo analysis updated.[/green]")
+    except Exception:
+        pass  # cross-repo hooks must never fail the update
 
     elapsed = time.monotonic() - start
 
