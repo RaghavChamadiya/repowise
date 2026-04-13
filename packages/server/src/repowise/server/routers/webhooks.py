@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import hashlib
 import hmac
 import json
@@ -15,7 +14,6 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from repowise.core.persistence import crud
 from repowise.core.persistence.models import GenerationJob
 from repowise.server.deps import get_db_session
-from repowise.server.job_executor import execute_job
 from repowise.server.schemas import WebhookResponse
 
 logger = logging.getLogger(__name__)
@@ -53,16 +51,21 @@ def _verify_gitlab_token(token_header: str) -> None:
         raise HTTPException(status_code=401, detail="Invalid token")
 
 
-def _launch_job_task(request: Request, job_id: str) -> None:
-    """Launch a background job task from a webhook handler."""
-    task = asyncio.create_task(execute_job(job_id, request.app.state), name=f"job-{job_id}")
-    bg_tasks: set[asyncio.Task] = request.app.state.background_tasks
+def _launch_webhook_job(request: Request, job_id: str) -> None:
+    """Launch a webhook-triggered job as a background task."""
+    import asyncio
+
+    from repowise.server.job_executor import execute_job
+
+    task = asyncio.create_task(
+        execute_job(job_id, request.app.state),
+        name=f"webhook-job-{job_id}",
+    )
+    bg_tasks: set = request.app.state.background_tasks
     bg_tasks.add(task)
 
     def _on_done(t: asyncio.Task) -> None:
         bg_tasks.discard(t)
-        if not t.cancelled() and t.exception() is not None:
-            logger.error("background_job_failed", exc_info=t.exception())
 
     task.add_done_callback(_on_done)
 
@@ -140,7 +143,7 @@ async def github_webhook(
                     )
                     await crud.mark_webhook_processed(session, event.id, job_id=job.id)
                     await session.commit()
-                    _launch_job_task(request, job.id)
+                    _launch_webhook_job(request, job.id)
 
     return WebhookResponse(event_id=event.id)
 
@@ -185,6 +188,7 @@ async def gitlab_webhook(
             )
             repo = result.scalar_one_or_none()
             if repo and branch == repo.default_branch:
+                # Prevent concurrent pipeline runs on the same repo
                 active = await session.execute(
                     select(GenerationJob.id)
                     .where(GenerationJob.repository_id == repo.id)
@@ -207,6 +211,6 @@ async def gitlab_webhook(
                     )
                     await crud.mark_webhook_processed(session, event.id, job_id=job.id)
                     await session.commit()
-                    _launch_job_task(request, job.id)
+                    _launch_webhook_job(request, job.id)
 
     return WebhookResponse(event_id=event.id)

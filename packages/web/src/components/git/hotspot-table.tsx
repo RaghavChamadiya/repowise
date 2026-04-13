@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useMemo } from "react";
-import { TrendingUp, TrendingDown, Search } from "lucide-react";
+import { TrendingUp, TrendingDown, Search, Flame, ArrowUpDown, ArrowUp, ArrowDown } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { EmptyState } from "@/components/shared/empty-state";
@@ -15,10 +15,30 @@ interface HotspotTableProps {
 }
 
 type Filter = "all" | "hot" | "risk" | "accelerating";
+type SortKey = "trend" | "churn" | "commits";
+type SortDir = "asc" | "desc";
+
+function SortIcon({ column, sortKey, sortDir }: { column: SortKey; sortKey: SortKey; sortDir: SortDir }) {
+  if (column !== sortKey) return <ArrowUpDown className="inline h-3 w-3 ml-1 opacity-40" />;
+  return sortDir === "desc"
+    ? <ArrowDown className="inline h-3 w-3 ml-1" />
+    : <ArrowUp className="inline h-3 w-3 ml-1" />;
+}
 
 export function HotspotTable({ hotspots }: HotspotTableProps) {
   const [search, setSearch] = useState("");
   const [filter, setFilter] = useState<Filter>("all");
+  const [sortKey, setSortKey] = useState<SortKey>("trend");
+  const [sortDir, setSortDir] = useState<SortDir>("desc");
+
+  function handleSort(key: SortKey) {
+    if (key === sortKey) {
+      setSortDir((d) => (d === "desc" ? "asc" : "desc"));
+    } else {
+      setSortKey(key);
+      setSortDir("desc");
+    }
+  }
 
   const filtered = useMemo(() => {
     let items = hotspots;
@@ -44,8 +64,21 @@ export function HotspotTable({ hotspots }: HotspotTableProps) {
         break;
     }
 
+    // Client-side sort
+    const sign = sortDir === "desc" ? -1 : 1;
+    items = [...items].sort((a, b) => {
+      if (sortKey === "trend") {
+        const av = a.temporal_hotspot_score ?? -1;
+        const bv = b.temporal_hotspot_score ?? -1;
+        return sign * (av - bv);
+      }
+      if (sortKey === "churn") return sign * (a.churn_percentile - b.churn_percentile);
+      if (sortKey === "commits") return sign * (a.commit_count_90d - b.commit_count_90d);
+      return 0;
+    });
+
     return items;
-  }, [hotspots, search, filter]);
+  }, [hotspots, search, filter, sortKey, sortDir]);
 
   if (hotspots.length === 0) {
     return (
@@ -73,7 +106,7 @@ export function HotspotTable({ hotspots }: HotspotTableProps) {
             placeholder="Search files or owners…"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            className="pl-8 h-8 w-56 text-xs"
+            className="pl-8 h-8 w-full sm:w-56 text-xs"
           />
         </div>
         <div className="flex rounded-md border border-[var(--color-border-default)] overflow-hidden text-xs">
@@ -109,19 +142,32 @@ export function HotspotTable({ hotspots }: HotspotTableProps) {
                 <th className="px-3 py-2.5 text-left text-xs font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider">
                   File
                 </th>
-                <th className="px-3 py-2.5 text-left text-xs font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider w-24">
-                  Commits 90d
+                <th
+                  className="px-3 py-2.5 text-left text-xs font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider w-24 cursor-pointer select-none hover:text-[var(--color-text-secondary)]"
+                  onClick={() => handleSort("commits")}
+                >
+                  Commits 90d<SortIcon column="commits" sortKey={sortKey} sortDir={sortDir} />
                 </th>
-                <th className="px-3 py-2.5 text-left text-xs font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider w-32">
-                  Churn
+                <th
+                  className="px-3 py-2.5 text-left text-xs font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider w-32 cursor-pointer select-none hover:text-[var(--color-text-secondary)] hidden lg:table-cell"
+                  onClick={() => handleSort("churn")}
+                >
+                  Churn<SortIcon column="churn" sortKey={sortKey} sortDir={sortDir} />
                 </th>
-                <th className="px-3 py-2.5 text-left text-xs font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider w-20">
+                <th
+                  className="px-3 py-2.5 text-left text-xs font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider w-24 cursor-pointer select-none hover:text-[var(--color-text-secondary)]"
+                  onClick={() => handleSort("trend")}
+                  title="Exponential decay score weighting recent commits more heavily (180-day half-life)"
+                >
+                  Trend<SortIcon column="trend" sortKey={sortKey} sortDir={sortDir} />
+                </th>
+                <th className="px-3 py-2.5 text-left text-xs font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider w-20 hidden md:table-cell">
                   Bus Factor
                 </th>
-                <th className="px-3 py-2.5 text-left text-xs font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider w-24">
+                <th className="px-3 py-2.5 text-left text-xs font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider w-24 hidden lg:table-cell">
                   Lines ±90d
                 </th>
-                <th className="px-3 py-2.5 text-left text-xs font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider">
+                <th className="px-3 py-2.5 text-left text-xs font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider hidden md:table-cell">
                   Owner
                 </th>
                 <th className="px-3 py-2.5 w-20" />
@@ -130,6 +176,7 @@ export function HotspotTable({ hotspots }: HotspotTableProps) {
             <tbody>
               {filtered.map((h, i) => {
                 const accelerating = h.commit_count_30d * 3 > h.commit_count_90d;
+                const trendScore = h.temporal_hotspot_score;
                 return (
                   <tr
                     key={h.file_path}
@@ -153,7 +200,7 @@ export function HotspotTable({ hotspots }: HotspotTableProps) {
                         )}
                       </span>
                     </td>
-                    <td className="px-3 py-2.5">
+                    <td className="px-3 py-2.5 hidden lg:table-cell">
                       <div className="flex items-center gap-2">
                         <ChurnBar percentile={h.churn_percentile} className="w-16" />
                         <span className="text-xs text-[var(--color-text-tertiary)] tabular-nums w-8">
@@ -161,7 +208,21 @@ export function HotspotTable({ hotspots }: HotspotTableProps) {
                         </span>
                       </div>
                     </td>
-                    <td className="px-3 py-2.5">
+                    <td className="px-3 py-2.5 tabular-nums text-xs">
+                      <span className="flex items-center gap-1">
+                        {trendScore != null ? (
+                          <>
+                            <Flame className={cn("h-3 w-3 shrink-0", trendScore >= 5 ? "text-red-500" : trendScore >= 2 ? "text-orange-400" : "text-[var(--color-text-tertiary)]")} />
+                            <span className="text-[var(--color-text-secondary)]">
+                              {trendScore.toFixed(2)}
+                            </span>
+                          </>
+                        ) : (
+                          <span className="text-[var(--color-text-tertiary)]">—</span>
+                        )}
+                      </span>
+                    </td>
+                    <td className="px-3 py-2.5 hidden md:table-cell">
                       <span
                         className={`inline-flex items-center justify-center rounded px-1.5 py-0.5 text-xs font-medium tabular-nums ${
                           h.bus_factor <= 1
@@ -174,12 +235,12 @@ export function HotspotTable({ hotspots }: HotspotTableProps) {
                         {h.bus_factor}
                       </span>
                     </td>
-                    <td className="px-3 py-2.5 text-xs tabular-nums">
+                    <td className="px-3 py-2.5 text-xs tabular-nums hidden lg:table-cell">
                       <span className="text-green-400">+{formatLOC(h.lines_added_90d)}</span>
                       {" "}
                       <span className="text-red-400">-{formatLOC(h.lines_deleted_90d)}</span>
                     </td>
-                    <td className="px-3 py-2.5 text-xs text-[var(--color-text-secondary)]">
+                    <td className="px-3 py-2.5 text-xs text-[var(--color-text-secondary)] hidden md:table-cell">
                       {h.primary_owner ?? "—"}
                     </td>
                     <td className="px-3 py-2.5 flex items-center gap-1">

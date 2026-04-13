@@ -5,9 +5,10 @@ import { getRepo, getRepoStats } from "@/lib/api/repos";
 import { getGitSummary, getHotspots, getOwnership } from "@/lib/api/git";
 import { getDeadCodeSummary, listDeadCode } from "@/lib/api/dead-code";
 import { listDecisions, getDecisionHealth } from "@/lib/api/decisions";
-import { getGraph, getModuleGraph } from "@/lib/api/graph";
+import { getGraph, getModuleGraph, getCommunities, getExecutionFlows } from "@/lib/api/graph";
 import { getProviders } from "@/lib/api/providers";
 import { listJobs } from "@/lib/api/jobs";
+import { getKnowledgeMap } from "@/lib/api/knowledge-map";
 import { Badge } from "@/components/ui/badge";
 import { StatCard } from "@/components/shared/stat-card";
 import { HealthScoreRing } from "@/components/dashboard/health-score-ring";
@@ -19,6 +20,9 @@ import { computeHealthScore, buildAttentionItems, aggregateLanguages } from "@/l
 import { HotspotsMini } from "@/components/dashboard/hotspots-mini";
 import { DecisionsTimeline } from "@/components/dashboard/decisions-timeline";
 import { ModuleMinimap } from "@/components/dashboard/module-minimap";
+import { CommunitySummaryGrid } from "@/components/dashboard/community-summary-grid";
+import { ExecutionFlowsPanel } from "@/components/dashboard/execution-flows-panel";
+import { DependencyHeatmap } from "@/components/dashboard/dependency-heatmap";
 import { BusFactorPanel } from "@/components/git/bus-factor-panel";
 import { ChurnHistogram } from "@/components/git/churn-histogram";
 import { CommitCategoryDonut } from "@/components/git/commit-category-donut";
@@ -36,6 +40,8 @@ import type {
   DecisionHealthResponse,
   GraphExportResponse,
   ModuleGraphResponse,
+  CommunitySummaryItem,
+  ExecutionFlowsResponse,
 } from "@/lib/api/types";
 
 export const metadata: Metadata = { title: "Overview" };
@@ -60,7 +66,7 @@ export default async function OverviewPage({ params }: Props) {
   if (!repo) notFound();
 
   // Fetch all data in parallel — each independently failable
-  const [stats, gitSummary, hotspots, ownership, deadCodeSummary, deadCodeSafe, decisions, decisionHealth, graph, moduleGraph, providers, completedJobs] =
+  const [stats, gitSummary, hotspots, ownership, deadCodeSummary, deadCodeSafe, decisions, decisionHealth, graph, moduleGraph, providers, completedJobs, knowledgeMap, communities, executionFlows] =
     await Promise.all([
       safeFetch(() => getRepoStats(id)),
       safeFetch(() => getGitSummary(id)),
@@ -74,6 +80,9 @@ export default async function OverviewPage({ params }: Props) {
       safeFetch(() => getModuleGraph(id)),
       safeFetch(() => getProviders()),
       safeFetch(() => listJobs({ repo_id: id, limit: 20, status: "completed" })),
+      safeFetch(() => getKnowledgeMap(id)),
+      safeFetch(() => getCommunities(id)),
+      safeFetch(() => getExecutionFlows(id, { top_n: 5, max_depth: 5 })),
     ]);
 
   // Find timestamps for last sync and last full re-index from completed jobs
@@ -290,13 +299,153 @@ export default async function OverviewPage({ params }: Props) {
         );
       })()}
 
-      {/* ── Module Architecture Map (full width) ── */}
+      {/* ── Module Architecture Map + Dependency Heatmap ── */}
       {moduleGraph && moduleGraph.nodes.length > 0 && (
-        <ModuleMinimap
-          nodes={moduleGraph.nodes}
-          edges={moduleGraph.edges}
-          repoId={id}
-        />
+        <div className="space-y-4">
+          <ModuleMinimap
+            nodes={moduleGraph.nodes}
+            edges={moduleGraph.edges}
+            repoId={id}
+          />
+          {moduleGraph.nodes.length >= 2 && (
+            <Card>
+              <CardHeader className="pb-2">
+                <CardTitle className="text-sm font-medium">Dependency Heatmap</CardTitle>
+                <p className="text-xs text-[var(--color-text-tertiary)]">
+                  Module-to-module dependency density — brighter cells indicate more connections
+                </p>
+              </CardHeader>
+              <CardContent>
+                <DependencyHeatmap moduleGraph={moduleGraph} />
+              </CardContent>
+            </Card>
+          )}
+        </div>
+      )}
+
+      {/* ── Graph Intelligence: Communities & Execution Flows ── */}
+      {((communities && communities.length > 0) || (executionFlows && executionFlows.flows.length > 0)) && (
+        <div className="space-y-4">
+          <h2 className="text-sm font-medium text-[var(--color-text-secondary)] uppercase tracking-wider">
+            Graph Intelligence
+          </h2>
+          <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+            {communities && communities.length > 0 && (
+              <CommunitySummaryGrid communities={communities} repoId={id} />
+            )}
+            {executionFlows && executionFlows.flows.length > 0 && (
+              <ExecutionFlowsPanel flows={executionFlows.flows} repoId={id} />
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* ── Knowledge Map ── */}
+      {knowledgeMap && (
+        <div className="space-y-4">
+          <h2 className="text-sm font-medium text-[var(--color-text-secondary)] uppercase tracking-wider">
+            Knowledge Map
+          </h2>
+          <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
+
+            {/* Top Owners */}
+            <Card>
+              <CardHeader className="pb-2">
+                <CardTitle className="text-sm font-medium">Top Owners</CardTitle>
+              </CardHeader>
+              <CardContent>
+                {knowledgeMap.top_owners.length === 0 ? (
+                  <p className="text-xs text-[var(--color-text-tertiary)]">No ownership data available.</p>
+                ) : (
+                  <ul className="space-y-2">
+                    {knowledgeMap.top_owners.slice(0, 5).map((owner) => (
+                      <li key={owner.email} className="flex items-center justify-between gap-2">
+                        <div className="min-w-0">
+                          <p className="text-xs font-medium text-[var(--color-text-primary)] truncate">
+                            {owner.name || owner.email}
+                          </p>
+                          {owner.name && (
+                            <p className="text-[10px] text-[var(--color-text-tertiary)] truncate">{owner.email}</p>
+                          )}
+                        </div>
+                        <div className="text-right shrink-0">
+                          <span className="text-xs font-mono text-[var(--color-text-secondary)]">
+                            {formatNumber(owner.files_owned)} files
+                          </span>
+                          <span className="ml-2 text-[10px] text-[var(--color-text-tertiary)]">
+                            {owner.percentage}%
+                          </span>
+                        </div>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </CardContent>
+            </Card>
+
+            {/* Knowledge Silos */}
+            <Card>
+              <CardHeader className="pb-2">
+                <CardTitle className="text-sm font-medium">Knowledge Silos</CardTitle>
+              </CardHeader>
+              <CardContent>
+                {knowledgeMap.knowledge_silos.length === 0 ? (
+                  <p className="text-xs text-[var(--color-text-tertiary)]">No silos detected — good bus factor!</p>
+                ) : (
+                  <div className="space-y-1">
+                    <p className="text-xs text-[var(--color-text-secondary)] mb-2">
+                      {formatNumber(knowledgeMap.knowledge_silos.length)} file
+                      {knowledgeMap.knowledge_silos.length === 1 ? "" : "s"} with &gt;80% single-owner concentration
+                    </p>
+                    <ul className="space-y-1">
+                      {knowledgeMap.knowledge_silos.slice(0, 3).map((silo) => (
+                        <li key={silo.file_path} className="flex items-center justify-between gap-2">
+                          <p className="text-[11px] font-mono text-[var(--color-text-primary)] truncate min-w-0">
+                            {silo.file_path}
+                          </p>
+                          <span className="text-[10px] text-[var(--color-text-tertiary)] shrink-0">
+                            {Math.round(silo.owner_pct * 100)}%
+                          </span>
+                        </li>
+                      ))}
+                      {knowledgeMap.knowledge_silos.length > 3 && (
+                        <li className="text-[10px] text-[var(--color-text-tertiary)]">
+                          +{knowledgeMap.knowledge_silos.length - 3} more
+                        </li>
+                      )}
+                    </ul>
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+
+            {/* Onboarding Targets */}
+            <Card>
+              <CardHeader className="pb-2">
+                <CardTitle className="text-sm font-medium">Onboarding Targets</CardTitle>
+              </CardHeader>
+              <CardContent>
+                {knowledgeMap.onboarding_targets.length === 0 ? (
+                  <p className="text-xs text-[var(--color-text-tertiary)]">No graph data available.</p>
+                ) : (
+                  <ul className="space-y-2">
+                    {knowledgeMap.onboarding_targets.slice(0, 5).map((target) => (
+                      <li key={target.path} className="space-y-0.5">
+                        <p className="text-[11px] font-mono text-[var(--color-text-primary)] truncate">
+                          {target.path}
+                        </p>
+                        <p className="text-[10px] text-[var(--color-text-tertiary)]">
+                          pagerank {target.pagerank.toFixed(4)} · {formatNumber(target.doc_words)} doc words
+                        </p>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </CardContent>
+            </Card>
+
+          </div>
+        </div>
       )}
     </div>
   );
