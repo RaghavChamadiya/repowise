@@ -49,13 +49,14 @@ All seven languages support:
 - Named binding extraction (mapping imported names to source symbols)
 - Heritage extraction (class/interface/trait inheritance chains)
 - Docstring extraction (Python, JSDoc, GoDoc, Rustdoc, Javadoc, Doxygen)
-- Framework-aware edges (Django, FastAPI, Flask for Python; tsconfig path aliases for TS/JS)
+- Framework-aware edges (Django, FastAPI, Flask for Python; tsconfig path aliases for TS/JS; pytest fixture detection)
 
 ### Good
 
 AST parsing, symbol extraction, import resolution, call resolution, named
-bindings, heritage extraction, and docstrings. Dedicated resolvers for each
-language.
+bindings, heritage extraction (including Ruby mixins, Rust derive, Swift
+extension conformance, PHP trait use), and docstrings. Dedicated import
+resolvers for each language.
 
 | Language | Extensions | Entry Points | Import Style |
 |----------|-----------|-------------|-------------|
@@ -284,6 +285,12 @@ ingestion/
     go.py              #   go.mod module path stripping
     rust.py            #   crate::/self::/super::, mod.rs probing
     cpp.py             #   compile_commands.json include paths
+    kotlin.py          #   package-to-directory mapping
+    ruby.py            #   require/require_relative resolution
+    csharp.py          #   namespace-based resolution
+    swift.py           #   module import resolution
+    scala.py           #   package-to-directory mapping
+    php.py             #   namespace/PSR-4 resolution
     generic.py         #   stem-matching fallback
   framework_edges.py   # Django, FastAPI, Flask, pytest detection
   parser.py            # ASTParser (language-agnostic orchestration)
@@ -299,7 +306,6 @@ Adding a new language requires zero changes to `parser.py`, `graph.py`,
 
 | Language | Target Tier | Status |
 |----------|------------|--------|
-| Dart | Good | Stretch goal — `tree-sitter-dart` available |
-| Elixir | Good | Stretch goal — `tree-sitter-elixir` available |
-
-See `docs/LANGUAGE_SUPPORT_PLAN.md` for the original 3-phase plan.
+| Dart | Good | Planned — `tree-sitter-dart` available |
+| Elixir | Good | Planned — `tree-sitter-elixir` available |
+| F# | Good | Planned — `tree-sitter-f-sharp` available |
