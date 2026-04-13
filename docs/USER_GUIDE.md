@@ -22,12 +22,15 @@ Everything you need to know to install, use, and get the most out of repowise.
    - [reindex](#repowise-reindex)
    - [status](#repowise-status)
    - [doctor](#repowise-doctor)
+   - [workspace](#repowise-workspace)
+   - [hook](#repowise-hook)
 4. [Web UI](#web-ui)
 5. [MCP Integration with AI Editors](#mcp-integration-with-ai-editors)
 6. [Proactive Context Enrichment (Hooks)](#proactive-context-enrichment-hooks)
-7. [Environment Variables](#environment-variables)
-8. [Common Workflows](#common-workflows)
-9. [Troubleshooting](#troubleshooting)
+7. [Auto-Sync](#auto-sync)
+8. [Environment Variables](#environment-variables)
+9. [Common Workflows](#common-workflows)
+10. [Troubleshooting](#troubleshooting)
 
 ---
 
@@ -316,63 +319,21 @@ This is how you connect repowise to Claude Code, Cursor, Cline, Windsurf, and ot
 | `--transport` | Protocol: `stdio` (default, for editors) or `sse` (for web clients) |
 | `--port` | Port for SSE transport (default: 7338) |
 
-**MCP tools exposed (16 tools):**
+**MCP tools exposed (7 tools):**
 
 | Tool | What it does |
 |------|-------------|
+| `get_overview` | Repository architecture summary, key modules, entry points, git health, community summary |
 | `get_answer` | One-call RAG: confidence-gated synthesis over the wiki, with cited 2–5 sentence answers and a per-repository question cache |
-| `get_symbol` | Resolve a qualified symbol id (`path::Class::method`) to its source body, signature, and docstring |
-| `get_overview` | Repository architecture summary, key modules, entry points, git health |
-| `get_context` | Complete context for files/modules/symbols — docs, ownership, decisions, freshness. Defaults to `compact=True`; pass `compact=False` for the full structure block and importer list. |
-| `get_risk` | Modification risk assessment — hotspot score, dependents, bus factor, trend |
-| `get_why` | Why code is structured the way it is — architectural decisions, git archaeology |
-| `search_codebase` | Semantic search over wiki with git freshness boosting |
-| `get_dependency_path` | Find how two modules connect through the dependency graph |
-| `get_dead_code` | Tiered dead code report grouped by confidence |
-| `get_architecture_diagram` | Mermaid diagram with optional churn heat map |
-| `annotate_file` | Attach human-authored notes to a wiki page — survives re-indexing |
-| `get_callers_callees` | Find who calls a symbol and what it calls. Pass `edge_types=["extends","implements"]` to traverse class hierarchy instead of call edges. |
-| `get_community` | Show the architectural community a file belongs to — cohesion score, member list, neighboring communities with cross-edge counts. |
-| `get_graph_metrics` | PageRank, betweenness centrality, percentile ranks, and in/out degree for any file or symbol node. |
-| `get_execution_flows` | Top scored entry points with BFS call-path traces and cross-community classification. |
+| `get_context` | Complete context for files/modules/symbols — docs, ownership, decisions, freshness, community membership. Defaults to `compact=True`; pass `compact=False` for the full structure block and importer list. In workspace mode, accepts `repo` parameter. |
+| `search_codebase` | Semantic search over wiki with git freshness boosting. In workspace mode, searches across all repos. |
+| `get_risk` | Modification risk assessment — hotspot score, dependents, co-change partners, bus factor, blast radius, test gaps, 0–10 risk score |
+| `get_why` | Why code is structured the way it is — architectural decisions, git archaeology. Three modes: NL search, path-based, health dashboard. |
+| `get_dead_code` | Tiered dead code report grouped by confidence with cleanup impact estimates |
 
-See [MCP Integration](#mcp-integration-with-ai-editors) for setup instructions.
+In workspace mode, tools are workspace-aware — pass `repo="backend"` to target a specific repo or `repo="all"` to query across the entire workspace. The default repo is used when `repo` is omitted.
 
-#### Graph intelligence tools
-
-The four graph tools work against the symbol-level dependency graph built during ingestion and give AI editors precise structural awareness without requiring them to read source files.
-
-**`get_callers_callees`**
-
-```
-get_callers_callees(symbol_id, direction, edge_types, limit)
-```
-
-Returns the callers or callees of a symbol. `direction` is `"callers"`, `"callees"`, or `"both"`. `edge_types` defaults to `["calls"]`; pass `["extends", "implements"]` to traverse class hierarchy instead of call edges. Results include confidence scores and source locations.
-
-**`get_community`**
-
-```
-get_community(target, include_members, member_limit)
-```
-
-Shows the architectural community a file belongs to — its label (heuristically derived from dominant patterns), cohesion score, and neighboring communities with cross-edge counts. `include_members=true` lists all files in the community up to `member_limit`.
-
-**`get_graph_metrics`**
-
-```
-get_graph_metrics(target)
-```
-
-Returns PageRank, betweenness centrality, percentile ranks (e.g. "top 5% by PageRank"), and in/out degree for any file or symbol node. Useful for understanding how structurally central a file is before modifying it.
-
-**`get_execution_flows`**
-
-```
-get_execution_flows(top_n, max_depth, entry_point)
-```
-
-Returns the top-scored entry points (ranked by a 5-signal scoring model: fan-out ratio, in-degree, visibility, name pattern, framework hint) with BFS call-path traces showing how execution flows through the codebase. Each flow is annotated with cross-community transitions so you can see module boundary crossings. Supply `entry_point` to trace from a specific symbol rather than the auto-ranked list.
+See [MCP Integration](#mcp-integration-with-ai-editors) for setup instructions. Full tool reference: [MCP_TOOLS.md](MCP_TOOLS.md)
 
 ---
 
@@ -591,6 +552,56 @@ Checks:
 
 ---
 
+### `repowise workspace`
+
+Manage multi-repo workspaces. See [Workspaces](WORKSPACES.md) for the full guide.
+
+**Subcommands:**
+
+```bash
+repowise workspace list                         # Show all repos with index status
+repowise workspace add <path> [--alias NAME]    # Add a repo to the workspace
+repowise workspace remove <alias>               # Remove a repo (doesn't delete files)
+repowise workspace scan                         # Re-scan for new repos
+repowise workspace set-default <alias>          # Change the default repo for MCP queries
+```
+
+**Examples:**
+
+```bash
+# Initialize a workspace
+cd my-workspace/
+repowise init .
+
+# Add a repo that lives outside the workspace directory
+repowise workspace add /path/to/external-repo --alias api-gateway
+
+# Update all workspace repos
+repowise update --workspace
+
+# Update just one repo
+repowise update --repo backend
+```
+
+---
+
+### `repowise hook`
+
+Manage post-commit git hooks that auto-sync the wiki after every commit.
+
+```bash
+repowise hook install              # Install hook for current repo
+repowise hook install --workspace  # Install for all workspace repos
+repowise hook status               # Check if hooks are installed
+repowise hook status --workspace   # Check all workspace repos
+repowise hook uninstall            # Remove the hook
+repowise hook uninstall --workspace
+```
+
+The hook is marker-delimited, so it coexists safely with other tools' hooks (linters, formatters, etc.) in the same `post-commit` file. The hook runs `repowise update` in the background — your terminal is never blocked.
+
+---
+
 ## Web UI
 
 Repowise includes a full web dashboard built with Next.js, React, and D3.js.
@@ -725,6 +736,15 @@ Ask questions about your codebase in natural language. Streaming responses power
 **Settings** (`/settings`)
 Configure API connection, default provider/model, embedder, and view webhook/MCP setup instructions.
 
+**Workspace Dashboard** (`/workspace`) *(workspace mode only)*
+Aggregate stats across all repos, repo cards with file/symbol/coverage counts, and cross-repo intelligence summary.
+
+**Workspace Contracts** (`/workspace/contracts`) *(workspace mode only)*
+All detected API contracts (HTTP, gRPC, message topics) with provider/consumer matching, filterable by type and repo.
+
+**Workspace Co-Changes** (`/workspace/co-changes`) *(workspace mode only)*
+Cross-repo file pairs ranked by co-change strength.
+
 ---
 
 ## MCP Integration with AI Editors
@@ -852,6 +872,32 @@ For most day-to-day coding tasks, hooks provide sufficient context automatically
 
 ---
 
+## Auto-Sync
+
+repowise supports five methods to keep your wiki in sync with code changes. See [Auto-Sync](AUTO_SYNC.md) for the full guide.
+
+| Method | Command | Best for |
+|--------|---------|----------|
+| **Post-commit hook** | `repowise hook install` | Set-and-forget local dev |
+| **File watcher** | `repowise watch` | Active development |
+| **GitHub webhook** | Server endpoint | Teams, CI/CD |
+| **GitLab webhook** | Server endpoint | Teams, CI/CD |
+| **Polling fallback** | Automatic with `repowise serve` | Safety net |
+
+### Quick setup
+
+```bash
+# Post-commit hook (recommended)
+repowise hook install
+repowise hook install --workspace    # all workspace repos
+
+# File watcher
+repowise watch
+repowise watch --workspace           # all workspace repos
+```
+
+---
+
 ## Environment Variables
 
 | Variable | Required | Description |
@@ -868,13 +914,24 @@ For most day-to-day coding tasks, hooks provide sufficient context automatically
 
 ## Common Workflows
 
-### First-time setup for a new project
+### First-time setup for a single repo
 
 ```bash
 pip install "repowise[anthropic]"
 export ANTHROPIC_API_KEY="sk-ant-..."
 cd /path/to/your-project
 repowise init
+repowise hook install    # auto-sync after every commit
+```
+
+### First-time setup for a multi-repo workspace
+
+```bash
+pip install "repowise[anthropic]"
+export ANTHROPIC_API_KEY="sk-ant-..."
+cd /path/to/workspace/   # parent dir with backend/, frontend/, etc.
+repowise init .
+repowise hook install --workspace
 ```
 
 ### Daily development workflow
@@ -886,6 +943,9 @@ repowise update
 
 # Option B: Continuous sync while coding
 repowise watch
+
+# Option C: Set-and-forget (if hook installed)
+# Just code and commit — the hook handles it
 ```
 
 ### Before a code review

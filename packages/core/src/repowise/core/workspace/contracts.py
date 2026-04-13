@@ -395,11 +395,13 @@ async def run_contract_extraction(
 
     contract_config = ws_config.contracts
 
-    # Build repo_paths
+    # Build repo_paths — only include repos that have been indexed
+    # (have a .repowise/ directory). Non-indexed repos must not participate
+    # in contract extraction.
     repo_paths: dict[str, Path] = {}
     for entry in ws_config.repos:
         resolved = (workspace_root / entry.path).resolve()
-        if resolved.is_dir():
+        if resolved.is_dir() and (resolved / ".repowise").is_dir():
             repo_paths[entry.alias] = resolved
 
     if len(repo_paths) < 2:

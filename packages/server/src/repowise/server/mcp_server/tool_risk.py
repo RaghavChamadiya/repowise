@@ -329,6 +329,10 @@ async def _assess_one_target(
     if bus_factor == 1 and (meta.commit_count_total or 0) > 20:
         bus_note = f", bus factor risk (sole maintainer: {owner})"
 
+    # NOTE: risk_summary is built here but dependents_count may be updated
+    # later by cross-repo enrichment. We store dep_count now and let the
+    # outer function rebuild the summary after enrichment if needed.
+    result_data["_base_dep_count"] = dep_count
     result_data["risk_summary"] = (
         f"{target} — hotspot score {hotspot_score:.0%} ({trend}), "
         f"{dep_count} dependents, {risk_type}, {change_pattern}, "
@@ -469,6 +473,12 @@ async def get_risk(
                     "affected_repos": affected_repos,
                 }
                 r["dependents_count"] = r.get("dependents_count", 0) + len(cross_partners)
+                # Rebuild risk_summary with updated dependents count
+                if "_base_dep_count" in r:
+                    r["risk_summary"] = r["risk_summary"].replace(
+                        f"{r['_base_dep_count']} dependents",
+                        f"{r['dependents_count']} dependents",
+                    )
 
             # Contract links (Phase 4)
             if enricher.has_contract_data:
@@ -503,6 +513,16 @@ async def get_risk(
                             }
                             for lk in consumer_links[:5]
                         ]
+
+    # Final risk_summary rebuild for any remaining dependents_count updates
+    # (e.g. contract provider links) and cleanup of internal keys.
+    for r in results:
+        base = r.pop("_base_dep_count", None)
+        if base is not None and r.get("dependents_count", base) != base:
+            r["risk_summary"] = r["risk_summary"].replace(
+                f"{base} dependents",
+                f"{r['dependents_count']} dependents",
+            )
 
     response: dict = {
         "targets": {r["target"]: r for r in results},

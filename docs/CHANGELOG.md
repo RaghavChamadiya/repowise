@@ -9,46 +9,55 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [Unreleased]
+## [0.3.0] — Unreleased
 
 ### Added
-- **Graph query MCP tools** — 4 new tools expose the full graph intelligence to AI coding assistants:
-  - `get_callers_callees` — find who calls a symbol, what it calls, and class hierarchy via `edge_types` parameter (supports `calls`, `extends`, `implements`)
-  - `get_community` — explore architectural communities: members, cohesion score, label, neighboring communities with cross-edge counts
-  - `get_graph_metrics` — PageRank, betweenness centrality, percentile ranks, in/out degree for any file or symbol node
-  - `get_execution_flows` — top scored entry points with BFS call-path traces, cross-community classification
-- **8 read-side graph CRUD functions** — `get_graph_node`, `get_graph_edges_for_node`, `get_graph_nodes_by_ids`, `get_community_members`, `get_all_file_metrics`, `get_cross_community_edges`, `get_top_entry_points`, `get_node_degree_counts`
-- **Entry point score persistence** — execution flow entry point scores stored in `community_meta_json` on symbol graph nodes, enabling fast retrieval without recomputing
-- **Graph query indexes** (migration `0017`) — composite indexes on `(repo, node_type, community)` and `(repo, source/target, edge_type)` for sub-millisecond graph queries
-- **Leiden community detection** — `graspologic.partition.leiden` with automatic fallback to NetworkX Louvain. Two-level: file communities (import/framework edges) and symbol communities (call/heritage edges). Oversized community splitting, cohesion scoring, heuristic labeling.
-- **Execution flow tracing** — 5-signal entry point scoring (fan-out ratio, in-degree, visibility, name pattern, framework hint) with BFS call-path discovery and cross-community classification
-- **Heritage extraction** — class inheritance and interface implementation for 11 languages (Python, TypeScript, JavaScript, Java, Go, Rust, C++, Kotlin, Ruby, C#, C). `HeritageResolver` uses 3-tier resolution with `extends`/`implements` graph edges.
-- **Symbol-level dependency graph** — the `networkx.DiGraph` is now two-tier. `GraphBuilder.add_file()` adds symbol nodes (functions, classes, methods) alongside file nodes and creates `DEFINES` and `HAS_METHOD` edges. `CALLS` edges link call sites to their resolved targets, each carrying a `confidence` score (0.0–1.0).
-- **`CallResolver` module** (`ingestion/call_resolver.py`) — 3-tier call resolution engine. Tier 1: same-file targets (confidence 0.95). Tier 2: import-scoped targets matched via named bindings (0.85–0.93 depending on alias type). Tier 3: global unique match (0.50). Call sites are extracted by tree-sitter for all 7 languages (Python, TypeScript, JavaScript, Go, Rust, Java, C++) using the existing `.scm` query infrastructure.
-- **`CallSite` dataclass** (`ingestion/models.py`) — represents a single call site extracted during AST parsing: caller symbol id, callee name, call line, and source file.
-- **`file_subgraph()` method** (`ingestion/graph.py`) — returns a filtered view of the DiGraph containing only `file` and `package` nodes. All file-level metrics (PageRank, betweenness, SCCs, Louvain, dead code in-degree) run on this subgraph to prevent symbol-node cardinality from distorting centrality scores.
-- **Named binding resolution** (`NamedBinding` dataclass in `ingestion/models.py`) — tracks `local_name`, `exported_name`, `source_file`, and `is_module_alias` for each import binding. The parser's `_extract_import_bindings()` covers alias forms across all 7 languages.
-- **`Import.resolved_file`** — populated during `GraphBuilder.build()` using `NamedBinding` data. Barrel files (`__init__.py`, `index.ts`) are followed one hop during resolution to handle re-exports.
-- **Proactive context enrichment via Claude Code hooks** — `repowise init` now registers PreToolUse and PostToolUse hooks in `~/.claude/settings.json`. PreToolUse enriches every `Grep`/`Glob` call with graph context (importers, dependencies, symbols, git signals) at ~24ms latency. PostToolUse detects git commits and notifies the agent when the wiki is stale.
-- **`repowise augment` CLI command** — hook-driven context enrichment engine. Reads Claude Code hook payloads from stdin, queries local wiki.db, and returns enriched context as JSON. Not meant to be called manually.
-- **`install_claude_code_hooks()`** — idempotent hook registration in `mcp_config.py`. Merges repowise hooks into existing user hooks without clobbering.
 
-- **5 new REST API endpoints** for graph intelligence:
-  - `GET /api/graph/{repo_id}/communities` — list all communities with labels, cohesion scores, and member counts
-  - `GET /api/graph/{repo_id}/communities/{id}` — community detail with member list and neighboring communities
-  - `GET /api/graph/{repo_id}/metrics?node_id=` — graph metrics (PageRank, betweenness, degree) with percentile ranks
-  - `GET /api/graph/{repo_id}/callers-callees?symbol_id=` — callers and callees for a symbol, with edge type filtering
-  - `GET /api/graph/{repo_id}/execution-flows` — execution flow traces from top-scored entry points
-- **Web UI — Overview page** — new "Graph Intelligence" section with an expandable community list (labels, cohesion, member counts) and an execution flows panel showing top entry points with call-path traces
-- **Web UI — Wiki (Docs) page** — new collapsible right sidebar section showing PageRank and betweenness percentile bars, community label, and in/out degree for the current file
-- **Web UI — Symbols page** — symbol drawer now has a right panel with graph metrics, callers/callees (with confidence scores), and heritage (extends/implements) for class nodes
-- **Web UI — Graph page** — community color mode now shows real community labels (from Leiden detection) in the legend instead of generic placeholders; clicking a node in community color mode opens a community detail panel; active color mode is preserved as a URL parameter
-- **Shared BFS trace utility** (`_graph_utils.py`) — reused by both the MCP `get_execution_flows` tool and the REST execution-flows router to avoid duplication
+#### Multi-repo workspaces
+- **Workspace support** — `repowise init .` from a parent directory scans for git repos (up to 3 levels deep), prompts for selection, and indexes each repo with cross-repo analysis. Config stored in `.repowise-workspace.yaml`.
+- **Workspace CLI commands** — `repowise workspace list`, `workspace add <path>`, `workspace remove <alias>`, `workspace scan`, `workspace set-default <alias>` for managing repos in a workspace.
+- **Workspace-aware MCP server** — a single MCP server instance serves all workspace repos. Tools accept an optional `repo` parameter to target a specific repo or `"all"` to query across the workspace. Lazy-loading with LRU eviction (max 5 repos loaded simultaneously).
+- **Cross-repo co-change detection** — analyzes git history across repos to find files that frequently change in the same time window.
+- **API contract extraction** — scans for HTTP route handlers (Express, FastAPI, Spring, Go), gRPC service definitions, and message topic publishers/subscribers. Matches providers with consumers across repos.
+- **Package dependency scanning** — reads package manifests (`package.json`, `pyproject.toml`, `go.mod`, `pom.xml`) to detect inter-repo package dependencies.
+- **Workspace CLAUDE.md** — auto-generated context file at the workspace root covering all repos, their relationships, cross-repo signals, and contract links.
+- **Workspace web UI** — workspace dashboard (`/workspace`) with aggregate stats and repo cards, contracts view (`/workspace/contracts`) with provider/consumer matching, and co-changes view (`/workspace/co-changes`) with cross-repo file pairs ranked by strength.
+- **Workspace update** — `repowise update --workspace` updates all stale repos in parallel (up to 4 concurrent) then re-runs cross-repo analysis. `--repo <alias>` targets a single repo.
+- **Workspace watch** — `repowise watch --workspace` auto-updates all workspace repos on file change.
+
+#### Auto-sync hooks
+- **`repowise hook` CLI** — `repowise hook install` installs a marker-delimited post-commit git hook that runs `repowise update` in the background after every commit. `hook install --workspace` installs for all workspace repos. `hook status` and `hook uninstall` for management.
+- **Proactive context enrichment via Claude Code hooks** — `repowise init` registers PreToolUse and PostToolUse hooks in `~/.claude/settings.json`. PreToolUse enriches every `Grep`/`Glob` call with graph context (importers, dependencies, symbols, git signals) at ~24ms latency. PostToolUse detects git commits and notifies the agent when the wiki is stale.
+- **Polling scheduler** — when the server is running, a background job polls registered repositories every 15 minutes and triggers updates for new commits missed by webhooks.
+
+#### Graph intelligence
+- **Symbol-level dependency graph** — the dependency graph is now two-tier: file nodes for module-level relationships and symbol nodes (functions, classes, methods) for fine-grained call resolution. Call edges carry confidence scores (0.0–1.0).
+- **3-tier call resolution** — Tier 1: same-file targets (confidence 0.95). Tier 2: import-scoped targets via named bindings (0.85–0.93). Tier 3: global unique match (0.50). Extracted by tree-sitter for Python, TypeScript, JavaScript, Go, Rust, Java, and C++.
+- **Named binding resolution** — tracks import aliases, barrel re-exports (`__init__.py`, `index.ts`), and namespace imports across all 7 full-tier languages.
+- **Heritage extraction** — class inheritance and interface implementation for 11 languages (Python, TypeScript, JavaScript, Java, Go, Rust, C++, Kotlin, Ruby, C#, C) with `extends`/`implements` graph edges.
+- **Leiden community detection** — two-level community detection (file communities from import edges, symbol communities from call/heritage edges) with cohesion scoring and heuristic labeling. Falls back to NetworkX Louvain when graspologic is unavailable.
+- **Execution flow tracing** — 5-signal entry point scoring (fan-out ratio, in-degree, visibility, name pattern, framework hint) with BFS call-path discovery and cross-community classification.
+- **Graph query indexes** (migration `0017`) — composite indexes for sub-millisecond graph queries.
+
+#### Web UI
+- **Graph Intelligence on Overview** — expandable community list (labels, cohesion, member counts) and execution flows panel with call-path traces on the overview dashboard.
+- **Wiki sidebar** — new collapsible section showing PageRank and betweenness percentile bars, community label, and in/out degree for the current file.
+- **Symbols drawer** — right panel with graph metrics, callers/callees (with confidence scores), and heritage (extends/implements) for class nodes.
+- **Graph page** — community color mode uses real community labels from Leiden detection. Clicking a node opens a community detail panel. Active color mode preserved as a URL parameter.
+- **Contributor network, hotspot, and ownership pages** — new dedicated pages for git intelligence.
+- **Docs viewer** — enriched with graph intelligence sidebar, version history, and improved markdown rendering.
+- **5 new graph REST API endpoints** — communities list, community detail, node metrics, callers/callees, and execution flows.
+
+#### Other
+- **Improved init UX** — pre-scan phase shows repo size and language breakdown before confirming. Advanced config options grouped logically with live insights during indexing.
+- **Doc generation enriched with graph intelligence** — wiki page generation prompts now include community context, caller/callee information, and heritage relationships.
 
 ### Changed
-- **`get_overview`** now includes `community_summary` — top communities by size with labels and cohesion scores
-- **`get_context`** (compact=False) now includes `community` block per file target with community ID and label
-- **`get_architecture_diagram`** now differentiates edge types in Mermaid diagrams: `calls` → dashed arrows, `extends`/`implements` → inheritance arrows
+- **`get_overview`** now includes `community_summary` — top communities by size with labels and cohesion scores.
+- **`get_context`** now includes `community` block per file target with community ID and label (when `compact=False`). In workspace mode, enriched with cross-repo co-change and contract data.
+- **`get_risk`** enriched with cross-repo signals in workspace mode — co-change partners from other repos and contract dependencies.
+- **`search_codebase`** in workspace mode searches across all repos and merges results.
+- **Job executor** — improved progress tracking, concurrent run detection (HTTP 409), and crash recovery for stale running jobs on server startup.
 
 ---
 
@@ -277,6 +286,8 @@ See git history for releases prior to 0.2.0.
 
 ---
 
+[0.3.0]: https://github.com/repowise-dev/repowise/compare/v0.2.3...HEAD
+[0.2.3]: https://github.com/repowise-dev/repowise/compare/v0.2.2...v0.2.3
 [0.2.2]: https://github.com/repowise-dev/repowise/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/repowise-dev/repowise/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/repowise-dev/repowise/compare/v0.1.31...v0.2.0

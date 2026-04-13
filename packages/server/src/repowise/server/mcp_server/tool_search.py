@@ -20,6 +20,10 @@ from repowise.server.mcp_server._helpers import (
 )
 from repowise.server.mcp_server._server import mcp
 
+# Minimum relevance score below which results are dropped. Prevents
+# returning semantically unrelated pages when the corpus has no real match.
+_MIN_RELEVANCE_SCORE = 0.03
+
 
 async def _search_single_repo(ctx, query: str, limit: int, page_type: str | None):
     """Run search against a single repo context. Returns list of result dicts."""
@@ -42,6 +46,8 @@ async def _search_single_repo(ctx, query: str, limit: int, page_type: str | None
     output = []
     for r in results:
         if page_type and r.page_type != page_type:
+            continue
+        if r.score < _MIN_RELEVANCE_SCORE:
             continue
         output.append({
             "page_id": r.page_id,
@@ -128,6 +134,8 @@ async def search_codebase(
     output = []
     for r in results:
         if page_type and r.page_type != page_type:
+            continue
+        if r.score < _MIN_RELEVANCE_SCORE:
             continue
         output.append(
             {

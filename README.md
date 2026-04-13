@@ -3,7 +3,7 @@
 <img src=".github/assets/logo.png" width="280" alt="repowise" /><br />
 **Codebase intelligence for AI-assisted engineering teams.**
 
-Four intelligence layers. Seven MCP tools. Proactive hooks. One `pip install`.
+Four intelligence layers. Seven MCP tools. Multi-repo workspaces. Auto-sync hooks. One `pip install`.
 
 [![PyPI version](https://img.shields.io/pypi/v/repowise?color=F59520&labelColor=0A0A0A)](https://pypi.org/project/repowise/)
 [![License: AGPL v3](https://img.shields.io/badge/license-AGPL--v3-F59520?labelColor=0A0A0A)](https://www.gnu.org/licenses/agpl-3.0)
@@ -23,7 +23,7 @@ Four intelligence layers. Seven MCP tools. Proactive hooks. One `pip install`.
 
 Your AI coding agent reads files. It does not know who owns them, which ones change together, which ones are dead, or why they were built the way they were. It has the source code and zero institutional knowledge.
 
-repowise fixes that. It indexes your codebase into four intelligence layers — dependency graph, git history, auto-generated documentation, and architectural decisions — and exposes them to Claude Code (and any MCP-compatible AI agent) through seven precisely designed tools. **27× fewer tokens per query. 36% cheaper. Same answer quality.**
+repowise fixes that. It indexes your codebase into four intelligence layers — dependency graph, git history, auto-generated documentation, and architectural decisions — and exposes them to Claude Code (and any MCP-compatible AI agent) through seven precisely designed tools. Multi-repo? Initialize a workspace and get cross-repo co-change detection, API contract extraction, and federated MCP queries across all your services. **27× fewer tokens per query. 36% cheaper. Same answer quality.**
 
 The result: your agent answers *"why does auth work this way?"* instead of *"here is what auth.ts contains."*
 
@@ -92,13 +92,23 @@ These become structured decision records, queryable by Claude Code via `get_why(
 pip install repowise
 ```
 
+### Single repo
+
 ```bash
 cd your-project
 repowise init        # builds all four intelligence layers (~25 min first time)
 repowise serve       # starts MCP server + local dashboard
 ```
 
-That's it. `repowise init` automatically registers the MCP server, installs PreToolUse/PostToolUse hooks in `~/.claude/settings.json`, generates `.mcp.json` at the project root, and offers to install a post-commit git hook that keeps everything in sync after every commit.
+### Multi-repo workspace
+
+```bash
+cd my-workspace/     # parent dir containing backend/, frontend/, shared-libs/
+repowise init .      # scans for git repos, indexes each, runs cross-repo analysis
+repowise serve       # workspace dashboard + per-repo pages
+```
+
+That's it. `repowise init` automatically registers the MCP server, installs PreToolUse/PostToolUse hooks in `~/.claude/settings.json`, generates `.mcp.json` at the project root, and offers to install a post-commit git hook that keeps everything in sync after every commit. See [Auto-Sync](docs/AUTO_SYNC.md) for all sync methods (hooks, file watcher, GitHub/GitLab webhooks, polling).
 
 To manually add the MCP server to another editor:
 
@@ -115,18 +125,56 @@ To manually add the MCP server to another editor:
 
 > **Note on init time:** Initial indexing analyzes your entire codebase — AST parsing, 500-commit git history, LLM doc generation, embedding indexing, and decision archaeology. This is a one-time cost (~25 minutes for a 3,000-file project). Every subsequent update after a commit takes under 30 seconds and only regenerates the few pages affected by your changes.
 
+> **Full docs:** [Quickstart](docs/QUICKSTART.md) · [User Guide](docs/USER_GUIDE.md) · [CLI Reference](docs/CLI_REFERENCE.md) · [MCP Tools](docs/MCP_TOOLS.md) · [Workspaces](docs/WORKSPACES.md) · [Auto-Sync](docs/AUTO_SYNC.md)
+
+---
+
+## Workspaces — multi-repo intelligence
+
+Most codebases aren't one repo. repowise workspaces let you index and query multiple repositories together — with cross-repo intelligence that single-repo tools can't provide.
+
+```bash
+cd my-workspace/          # backend/, frontend/, shared-libs/ under one parent
+repowise init .           # scan, select repos, index each, run cross-repo analysis
+```
+
+**What you get on top of per-repo intelligence:**
+
+| Feature | What it does |
+|---|---|
+| **Cross-repo co-changes** | Finds files across repos that change in the same time window — e.g., `backend/api/routes.py` and `frontend/src/api/client.ts` always move together |
+| **API contract extraction** | Scans for HTTP route handlers (Express, FastAPI, Spring, Go), gRPC service defs, and message topic publishers/subscribers — then matches providers with consumers across repos |
+| **Package dependency mapping** | Reads `package.json`, `pyproject.toml`, `go.mod`, `pom.xml` to detect when one repo depends on another as a package |
+| **Federated MCP queries** | One MCP server serves all repos. Pass `repo="backend"` or `repo="all"` to any tool |
+| **Workspace dashboard** | Aggregate stats, repo cards, contract links, co-change pairs — all in the web UI |
+| **Workspace CLAUDE.md** | Auto-generated context file covering all repos, their relationships, and cross-repo signals |
+
+**Workspace CLI:**
+
+```bash
+repowise workspace list                  # show all repos and their status
+repowise workspace add ../new-service    # add a repo to the workspace
+repowise workspace remove api-gateway    # remove a repo (doesn't delete files)
+repowise workspace scan                  # re-scan for new repos
+repowise update --workspace              # update all stale repos + cross-repo analysis
+repowise watch --workspace               # auto-update all repos on file change
+repowise hook install --workspace        # install post-commit hooks for all repos
+```
+
+Full guide: [docs/WORKSPACES.md](docs/WORKSPACES.md)
+
 ---
 
 ## Seven MCP tools
 
-Most tools are designed around data entities — one module, one file, one symbol — which forces AI agents into long chains of sequential calls. repowise tools are designed around **tasks**. Pass multiple targets in one call. Get complete context back.
+Most tools are designed around data entities — one module, one file, one symbol — which forces AI agents into long chains of sequential calls. repowise tools are designed around **tasks**. Pass multiple targets in one call. Get complete context back. Full reference: [docs/MCP_TOOLS.md](docs/MCP_TOOLS.md)
 
 | Tool | What it answers | When Claude Code calls it |
 |---|---|---|
 | `get_overview()` | Architecture summary, module map, entry points, git health, community summary | First call on any unfamiliar codebase |
 | `get_answer(question)` | One-call RAG: retrieves over the wiki, gates on confidence, and synthesizes a cited 2–5 sentence answer. High-confidence answers cite directly; ambiguous queries return ranked excerpts. | First call on any code question — collapses search → read → reason into one round-trip |
-| `get_context(targets, include?)` | The workhorse. Docs, symbols, ownership, freshness for any targets. `include` options: `"source"` (symbol body), `"callers"`/`"callees"` (call graph), `"metrics"` (PageRank, centrality), `"community"` (cluster membership). Batch multiple targets. | Before reading or modifying code. Pass all relevant targets in one call. |
-| `search_codebase(query)` | Semantic search over the full wiki. Natural language. | When `get_answer` returned low confidence and you need to discover candidate pages by topic |
+| `get_context(targets, include?)` | The workhorse. Docs, symbols, ownership, freshness, community membership for any targets. `include` options: `"source"` (symbol body), `"callers"`/`"callees"` (call graph), `"metrics"` (PageRank, centrality), `"community"` (cluster membership). Batch multiple targets. In workspace mode, pass `repo` to target a specific repo. | Before reading or modifying code. Pass all relevant targets in one call. |
+| `search_codebase(query)` | Semantic search over the full wiki. Natural language. In workspace mode, searches across all repos. | When `get_answer` returned low confidence and you need to discover candidate pages by topic |
 | `get_risk(targets?, changed_files?)` | Hotspot scores, dependents, co-change partners, blast radius, recommended reviewers, test gaps, security signals, 0–10 risk score | Before modifying files — understand what could break |
 | `get_why(query?)` | Three modes: NL search over decisions · path-based decisions for a file · no-arg health dashboard | Before architectural changes — understand existing intent |
 | `get_dead_code(min_confidence?, include_internals?)` | Unreachable code sorted by confidence tier with cleanup impact estimates | Cleanup tasks |
@@ -208,6 +256,9 @@ This is what happens when an AI agent has real codebase intelligence.
 | **Blast Radius** | Paste a PR file list, see transitive impact, reviewers, and test gaps |
 | **Knowledge Map** | Top owners, bus-factor silos, and onboarding targets on the dashboard |
 | **Graph Intelligence** | Architecture communities with expandable detail, execution flows with call traces, community coupling analysis — all on the overview dashboard |
+| **Workspace Dashboard** | Aggregate stats across repos, repo cards, cross-repo intelligence summary (workspace mode) |
+| **Workspace Contracts** | Detected API contracts (HTTP, gRPC, topics) with provider/consumer matching across repos |
+| **Workspace Co-Changes** | Cross-repo file pairs ranked by co-change strength |
 | **System Health** | SQL/vector/graph drift status from the atomic store coordinator |
 
 ---
@@ -247,7 +298,38 @@ After a successful `git commit`, repowise checks whether the wiki is out of date
 Run `repowise update` to refresh documentation and graph context.
 ```
 
-Hooks are installed automatically during `repowise init`. No manual configuration needed.
+Hooks are installed automatically during `repowise init`. No manual configuration needed. Full details: [docs/AUTO_SYNC.md](docs/AUTO_SYNC.md)
+
+---
+
+## Auto-sync — five ways to keep your wiki current
+
+repowise keeps your intelligence layers in sync with your code. Pick the method that fits your workflow:
+
+| Method | Command | Best for |
+|--------|---------|----------|
+| **Post-commit hook** | `repowise hook install` | Set-and-forget local development |
+| **File watcher** | `repowise watch` | Active development without committing |
+| **GitHub webhook** | Configure in repo settings | Teams, CI/CD |
+| **GitLab webhook** | Configure in project settings | Teams, CI/CD |
+| **Polling fallback** | Automatic with `repowise serve` | Safety net for missed webhooks |
+
+```bash
+# Install post-commit hook for one repo
+repowise hook install
+
+# Install for all repos in a workspace
+repowise hook install --workspace
+
+# Check hook status
+repowise hook status
+
+# Or use the file watcher
+repowise watch                    # single repo
+repowise watch --workspace        # all workspace repos
+```
+
+A typical single-commit update touches 3–10 pages and completes in under 30 seconds. Full guide: [docs/AUTO_SYNC.md](docs/AUTO_SYNC.md)
 
 ---
 
@@ -356,6 +438,7 @@ When a senior engineer leaves, the "why" usually leaves with them. Decision inte
 | Git intelligence (hotspots, ownership, co-changes) | ✅ | ❌ | ❌ | ❌ | ✅ |
 | Bus factor analysis | ✅ | ❌ | ❌ | ❌ | ✅ |
 | Architectural decision records | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Multi-repo workspace intelligence | ✅ co-changes, contracts, federated MCP | ❌ | ❌ | ❌ | ❌ |
 | MCP server for AI agents | ✅ 7 tools | ❌ | ✅ 3 tools | ✅ | ✅ |
 | Proactive agent hooks | ✅ PreToolUse + PostToolUse | ❌ | ❌ | ❌ | ❌ |
 | Auto-generated CLAUDE.md | ✅ | ❌ | ❌ | ❌ | ❌ |
@@ -371,7 +454,7 @@ When a senior engineer leaves, the "why" usually leaves with them. Decision inte
 - **vs Swimm** — Swimm's strength is keeping manually-written docs linked to code snippets with staleness detection. No graph, no git behavioral analytics, no dead code, no MCP by default. Enterprise pricing for private hosting.
 - **vs CodeScene** — CodeScene has excellent git intelligence (hotspots, co-changes, ownership, bus factor). No documentation generation, no RAG, no architectural decisions. Closed source, per-author pricing.
 
-repowise is the intersection: CodeScene-level git intelligence + auto-generated documentation + agent-native MCP + architectural decisions, self-hostable and open source.
+repowise is the intersection: CodeScene-level git intelligence + auto-generated documentation + agent-native MCP + architectural decisions + multi-repo workspace intelligence, self-hostable and open source.
 
 ---
 
@@ -387,7 +470,7 @@ Hosted adds what only makes sense in a managed, multi-user environment:
 - **Engineering leader dashboard** — bus factor trends, hotspot evolution over time, cross-repo dead code, ownership drift
 - **Managed webhooks** — zero-configuration auto re-index on every commit to any branch
 - **Integrations** — Slack alerts, Jira and Linear decision linking, Confluence and Notion doc sync, GitHub and GitLab webhooks, PagerDuty escalation routing
-- **Cross-repo intelligence** — hotspots, dead code, and ownership across all your repositories at once
+- **Cross-repo intelligence at scale** — hotspots, dead code, and ownership across all your repositories with centralized dashboards (beyond what local workspaces provide)
 
 [Get in touch →](https://www.repowise.dev/#contact) · [hello@repowise.dev](mailto:hello@repowise.dev)
 

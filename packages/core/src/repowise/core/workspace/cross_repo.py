@@ -596,15 +596,22 @@ async def run_cross_repo_analysis(
 
     Called from :func:`run_cross_repo_hooks` after workspace update.
     """
-    # Build repo_paths dict
+    # Build repo_paths dict — only include repos that have been indexed
+    # (have a .repowise/ directory). Non-indexed repos must not leak into
+    # cross-repo signals.
     repo_paths: dict[str, Path] = {}
     for entry in ws_config.repos:
         abs_path = (workspace_root / entry.path).resolve()
-        if abs_path.is_dir():
+        if abs_path.is_dir() and (abs_path / ".repowise").is_dir():
             repo_paths[entry.alias] = abs_path
+        elif abs_path.is_dir():
+            _log.debug(
+                "Skipping non-indexed repo %r in cross-repo analysis",
+                entry.alias,
+            )
 
     if len(repo_paths) < 2:
-        _log.debug("Skipping cross-repo analysis — fewer than 2 repos")
+        _log.debug("Skipping cross-repo analysis — fewer than 2 indexed repos")
         return CrossRepoOverlay()
 
     _log.info(

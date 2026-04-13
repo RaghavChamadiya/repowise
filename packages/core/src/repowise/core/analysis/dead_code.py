@@ -96,6 +96,23 @@ _NEVER_FLAG_PATTERNS = (
     "*postcss.config.*",
     "*jest.config.*",
     "*vitest.config.*",
+    # Next.js / Remix / SvelteKit framework route files — loaded by the
+    # framework at runtime, never imported via module imports.
+    "*/page.tsx",
+    "*/page.ts",
+    "*/page.jsx",
+    "*/page.js",
+    "*/layout.tsx",
+    "*/layout.ts",
+    "*/route.tsx",
+    "*/route.ts",
+    "*/loading.tsx",
+    "*/error.tsx",
+    "*/not-found.tsx",
+    "*/template.tsx",
+    "*/default.tsx",
+    # Nuxt route pages
+    "*/pages/*.vue",
 )
 
 # Decorator patterns that indicate framework usage (route handlers, fixtures, etc.)
@@ -353,11 +370,18 @@ class DeadCodeAnalyzer:
         age_days = git_meta.get("age_days")
         primary_owner = git_meta.get("primary_owner_name")
 
-        # Confidence rules
-        if commit_90d == 0 and last_commit and self._is_old(last_commit, days=180):
-            confidence = 1.0
+        # Confidence rules — differentiate by age and activity.
+        # _is_old uses strict >, so pass days-1 to get >= semantics.
+        if commit_90d == 0 and last_commit and self._is_old(last_commit, days=364):
+            confidence = 1.0  # Untouched for a year+ — very likely dead
+        elif commit_90d == 0 and last_commit and self._is_old(last_commit, days=179):
+            confidence = 0.9  # Untouched for 6+ months
+        elif commit_90d == 0 and last_commit and self._is_old(last_commit, days=89):
+            confidence = 0.8  # Untouched for 3+ months
+        elif commit_90d == 0 and age_days is not None and age_days < 30:
+            confidence = 0.55  # Recently created but no imports — may be WIP
         elif commit_90d == 0:
-            confidence = 0.7
+            confidence = 0.7  # No recent activity, unknown age
         else:
             confidence = 0.4
 

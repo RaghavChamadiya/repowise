@@ -265,7 +265,8 @@ async def _resolve_one_target(
     result_data["type"] = target_type
 
     # --- Docs ---
-    if include is None or "docs" in include:
+    # "full_doc" implies "docs" — entering the docs block whenever either is requested.
+    if include is None or "docs" in include or "full_doc" in include:
         want_full_doc = bool(include and "full_doc" in include)
         docs: dict[str, Any] = {}
         if target_type == "file":
