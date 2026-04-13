@@ -3,7 +3,7 @@ replicaCount: 1
 
 image:
   # -- Container image repository
-  repository: repowise/repowise
+  repository: yashgoyal04/repowise
   # -- Image pull policy
   pullPolicy: IfNotPresent
   # -- Override the image tag (defaults to Chart appVersion)

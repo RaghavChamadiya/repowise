@@ -10,14 +10,16 @@ Deploy [Repowise](https://github.com/repowise-dev/repowise) on Kubernetes.
 
 ## Quick Start
 
-The chart expects you to build and push your own container image from the repo's `docker/Dockerfile`:
+A pre-built image is available on Docker Hub (`yashgoyal04/repowise`). You can also build your own from `docker/Dockerfile`.
 
 ```bash
-# Build and push the image
+# Option 1: Use the pre-built image (default)
+helm install repowise ./charts/repowise \
+  --set apiKeys.anthropic=sk-ant-...
+
+# Option 2: Build and push your own image
 docker build -t your-registry/repowise:0.1.0 -f docker/Dockerfile .
 docker push your-registry/repowise:0.1.0
-
-# Install the chart
 helm install repowise ./charts/repowise \
   --set image.repository=your-registry/repowise \
   --set image.tag=0.1.0 \
@@ -35,7 +37,7 @@ helm install repowise ./charts/repowise \
 | Parameter | Description | Default |
 |-----------|-------------|---------|
 | `replicaCount` | Number of replicas (only 1 supported with SQLite) | `1` |
-| `image.repository` | Container image repository | `repowise/repowise` |
+| `image.repository` | Container image repository | `yashgoyal04/repowise` |
 | `image.tag` | Image tag (defaults to appVersion) | `""` |
 | `repowise.embedder` | Embedder backend (`mock`, `openai`, `gemini`) | `mock` |
 | `repowise.dbUrl` | Database connection URL | `sqlite+aiosqlite:////data/wiki.db` |
