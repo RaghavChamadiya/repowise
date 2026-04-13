@@ -41,7 +41,7 @@
 ) @symbol.def
 
 ; ---------------------------------------------------------------------------
-; Imports (use declarations)
+; Imports (use declarations + require/include)
 ; ---------------------------------------------------------------------------
 
 (namespace_use_declaration
@@ -49,6 +49,12 @@
     (qualified_name) @import.module
   )
 ) @import.statement
+
+; require/include file imports
+(require_expression (encapsed_string (string_content) @import.module)) @import.statement
+(require_once_expression (encapsed_string (string_content) @import.module)) @import.statement
+(include_expression (encapsed_string (string_content) @import.module)) @import.statement
+(include_once_expression (encapsed_string (string_content) @import.module)) @import.statement
 
 ; ---------------------------------------------------------------------------
 ; Calls

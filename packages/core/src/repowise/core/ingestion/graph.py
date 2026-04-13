@@ -166,6 +166,21 @@ class GraphBuilder:
                         edge_type="has_method",
                     )
 
+        # --- Synthetic module-level symbol for top-level calls ---
+        module_sym_id = f"{path}::__module__"
+        self._graph.add_node(
+            module_sym_id,
+            node_type="symbol",
+            kind="module",
+            name="__module__",
+            file_path=path,
+            start_line=0,
+            end_line=0,
+            visibility="private",
+            language=parsed.file_info.language,
+        )
+        self._graph.add_edge(path, module_sym_id, edge_type="defines")
+
     def build(self) -> nx.DiGraph:
         """Resolve imports and calls, add edges. Returns the finalized graph."""
         # Invalidate cached metrics

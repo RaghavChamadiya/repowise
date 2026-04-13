@@ -157,9 +157,14 @@ class CallResolver:
 
         for call in calls:
             if not call.caller_symbol_id:
-                # Calls at module level (outside any function) — skip for now
-                # as they don't have a clear caller node
-                continue
+                # Module-level call — assign to synthetic __module__ symbol
+                call = CallSite(
+                    target_name=call.target_name,
+                    receiver_name=call.receiver_name,
+                    caller_symbol_id=f"{file_path}::__module__",
+                    line=call.line,
+                    argument_count=call.argument_count,
+                )
 
             resolved = self._resolve_one(file_path, call)
             if resolved:
