@@ -11,6 +11,7 @@ Built-in providers:
     - ollama     → OllamaProvider
     - litellm    → LiteLLMProvider
     - zai        → ZAIProvider
+    - minimax    → MiniMaxProvider
     - mock       → MockProvider (testing only)
 
 Custom provider registration:
@@ -43,6 +44,7 @@ _BUILTIN_PROVIDERS: dict[str, tuple[str, str]] = {
     "ollama": ("repowise.core.providers.llm.ollama", "OllamaProvider"),
     "litellm": ("repowise.core.providers.llm.litellm", "LiteLLMProvider"),
     "zai": ("repowise.core.providers.llm.zai", "ZAIProvider"),
+    "minimax": ("repowise.core.providers.llm.minimax", "MiniMaxProvider"),
     "mock": ("repowise.core.providers.llm.mock", "MockProvider"),
 }
 
@@ -140,6 +142,7 @@ def get_provider(
             "ollama": "openai",  # ollama uses the openai package
             "litellm": "litellm",
             "zai": "openai",  # zai uses the openai package (OpenAI-compatible API)
+            "minimax": "openai",  # minimax uses the openai package (OpenAI-compatible API)
         }
         package = _missing.get(name, name)
         raise ImportError(

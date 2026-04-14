@@ -278,6 +278,16 @@ def resolve_provider(
                 kwargs["base_url"] = os.environ["ZAI_BASE_URL"]
             if os.environ.get("ZAI_THINKING"):
                 kwargs["thinking"] = os.environ["ZAI_THINKING"]
+        elif provider_name == "minimax":
+            # MiniMax: API key, base URL, reasoning_split, and tier
+            if os.environ.get("MINIMAX_API_KEY"):
+                kwargs["api_key"] = os.environ["MINIMAX_API_KEY"]
+            if os.environ.get("MINIMAX_BASE_URL"):
+                kwargs["base_url"] = os.environ["MINIMAX_BASE_URL"]
+            if os.environ.get("MINIMAX_REASONING_SPLIT"):
+                kwargs["reasoning_split"] = os.environ["MINIMAX_REASONING_SPLIT"].lower() == "true"
+            if os.environ.get("MINIMAX_TIER"):
+                kwargs["tier"] = os.environ["MINIMAX_TIER"]
 
         return get_provider(provider_name, **kwargs)
 
@@ -336,11 +346,23 @@ def resolve_provider(
         if os.environ.get("ZAI_THINKING"):
             kwargs["thinking"] = os.environ["ZAI_THINKING"]
         return get_provider("zai", **kwargs)
+    # MiniMax: check for API key
+    if os.environ.get("MINIMAX_API_KEY") and os.environ["MINIMAX_API_KEY"].strip():
+        kwargs = {"api_key": os.environ["MINIMAX_API_KEY"]}
+        if model:
+            kwargs["model"] = model
+        if os.environ.get("MINIMAX_BASE_URL"):
+            kwargs["base_url"] = os.environ["MINIMAX_BASE_URL"]
+        if os.environ.get("MINIMAX_REASONING_SPLIT"):
+            kwargs["reasoning_split"] = os.environ["MINIMAX_REASONING_SPLIT"].lower() == "true"
+        if os.environ.get("MINIMAX_TIER"):
+            kwargs["tier"] = os.environ["MINIMAX_TIER"]
+        return get_provider("minimax", **kwargs)
 
     raise click.ClickException(
         "No provider configured. Use --provider, set REPOWISE_PROVIDER, "
         "or set ANTHROPIC_API_KEY / OPENAI_API_KEY / OLLAMA_BASE_URL / GEMINI_API_KEY / "
-        "LITELLM_API_KEY / LITELLM_BASE_URL / ZAI_API_KEY."
+        "LITELLM_API_KEY / LITELLM_BASE_URL / ZAI_API_KEY / MINIMAX_API_KEY."
     )
 
 
@@ -381,6 +403,7 @@ def validate_provider_config(provider_name: str | None = None) -> list[str]:
             "LITELLM_BASE_URL",
         ],  # Either one (API key for cloud, base URL for local)
         "zai": ["ZAI_API_KEY"],
+        "minimax": ["MINIMAX_API_KEY"],
     }
 
     if provider_name:
