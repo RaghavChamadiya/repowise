@@ -266,6 +266,8 @@ _PROVIDER_DEFAULTS: dict[str, str] = {
     "anthropic": "claude-sonnet-4-6",
     "ollama": "llama3.2",
     "litellm": "groq/llama-3.1-70b-versatile",
+    "zai": "glm-5.1",
+    "minimax": "MiniMax-M1",
 }
 
 # For most providers, a single env var indicates configuration.
@@ -276,6 +278,8 @@ _PROVIDER_ENV: dict[str, str] = {
     "anthropic": "ANTHROPIC_API_KEY",
     "ollama": "OLLAMA_BASE_URL",
     "litellm": "LITELLM_API_KEY",  # Also checks LITELLM_BASE_URL in _detect_provider_status
+    "zai": "ZAI_API_KEY",
+    "minimax": "MINIMAX_API_KEY",
 }
 
 _PROVIDER_SIGNUP: dict[str, str] = {
@@ -284,6 +288,8 @@ _PROVIDER_SIGNUP: dict[str, str] = {
     "anthropic": "https://console.anthropic.com/settings/keys",
     "ollama": "https://ollama.com/download",
     "litellm": "https://docs.litellm.ai/docs/proxy/proxy",
+    "zai": "https://open.bigmodel.cn/usercenter/apikeys",
+    "minimax": "https://platform.minimaxi.com/document/key%20management",
 }
 
 
@@ -484,22 +490,14 @@ def interactive_provider_select(
         env_var = _PROVIDER_ENV[chosen]
         signup_url = _PROVIDER_SIGNUP.get(chosen, "")
         console.print()
-        # Special case: litellm local proxy doesn't need an API key
-        if chosen == "litellm" and os.environ.get("LITELLM_BASE_URL"):
-            console.print(
-                f"  [{OK}]✓ Using LiteLLM proxy at[/] [{BRAND}]{os.environ['LITELLM_BASE_URL']}[/]"
-            )
-            console.print("  [dim]No API key required for local proxy.[/dim]")
-            console.print()
-        else:
-            console.print(f"  [bold]{chosen}[/bold] requires [cyan]{env_var}[/cyan].")
-            if signup_url:
-                console.print(f"  Get your API key here: [{BRAND}]{signup_url}[/]")
-            console.print()
-            key = _prompt_api_key(console, chosen, env_var, repo_path=repo_path)
-            if not key:
-                console.print(f"  [{WARN}]Skipped. Please select another provider.[/]")
-                return interactive_provider_select(console, model_flag, repo_path=repo_path)
+        console.print(f"  [bold]{chosen}[/bold] requires [cyan]{env_var}[/cyan].")
+        if signup_url:
+            console.print(f"  Get your API key here: [{BRAND}]{signup_url}[/]")
+        console.print()
+        key = _prompt_api_key(console, chosen, env_var, repo_path=repo_path)
+        if not key:
+            console.print(f"  [{WARN}]Skipped. Please select another provider.[/]")
+            return interactive_provider_select(console, model_flag, repo_path=repo_path)
 
     # --- model ---
     default_model = _PROVIDER_DEFAULTS.get(chosen, "")

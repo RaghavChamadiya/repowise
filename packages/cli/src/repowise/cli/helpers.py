@@ -18,6 +18,18 @@ T = TypeVar("T")
 console = Console()
 err_console = Console(stderr=True)
 
+
+def _env_bool(name: str, *, default: bool = False) -> bool:
+    """Read a boolean from an environment variable.
+
+    Accepts ``1``, ``yes``, ``on``, and ``true`` (case-insensitive) as truthy.
+    Returns *default* if the variable is unset or empty.
+    """
+    value = os.environ.get(name, "").strip().lower()
+    if not value:
+        return default
+    return value in ("1", "yes", "on", "true")
+
 STATE_FILENAME = "state.json"
 REPOWISE_DIR = ".repowise"
 
@@ -285,7 +297,7 @@ def resolve_provider(
             if os.environ.get("MINIMAX_BASE_URL"):
                 kwargs["base_url"] = os.environ["MINIMAX_BASE_URL"]
             if os.environ.get("MINIMAX_REASONING_SPLIT"):
-                kwargs["reasoning_split"] = os.environ["MINIMAX_REASONING_SPLIT"].lower() == "true"
+                kwargs["reasoning_split"] = _env_bool("MINIMAX_REASONING_SPLIT")
             if os.environ.get("MINIMAX_TIER"):
                 kwargs["tier"] = os.environ["MINIMAX_TIER"]
 
@@ -354,7 +366,7 @@ def resolve_provider(
         if os.environ.get("MINIMAX_BASE_URL"):
             kwargs["base_url"] = os.environ["MINIMAX_BASE_URL"]
         if os.environ.get("MINIMAX_REASONING_SPLIT"):
-            kwargs["reasoning_split"] = os.environ["MINIMAX_REASONING_SPLIT"].lower() == "true"
+            kwargs["reasoning_split"] = _env_bool("MINIMAX_REASONING_SPLIT")
         if os.environ.get("MINIMAX_TIER"):
             kwargs["tier"] = os.environ["MINIMAX_TIER"]
         return get_provider("minimax", **kwargs)
