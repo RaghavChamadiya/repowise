@@ -266,13 +266,20 @@ _PROVIDER_DEFAULTS: dict[str, str] = {
     "anthropic": "claude-sonnet-4-6",
     "ollama": "llama3.2",
     "litellm": "groq/llama-3.1-70b-versatile",
+    "zai": "glm-5.1",
+    "minimax": "MiniMax-M1",
 }
 
+# For most providers, a single env var indicates configuration.
+# litellm is special: can use LITELLM_API_KEY (cloud) OR LITELLM_BASE_URL (local proxy).
 _PROVIDER_ENV: dict[str, str] = {
     "gemini": "GEMINI_API_KEY",
     "openai": "OPENAI_API_KEY",
     "anthropic": "ANTHROPIC_API_KEY",
     "ollama": "OLLAMA_BASE_URL",
+    "litellm": "LITELLM_API_KEY",  # Also checks LITELLM_BASE_URL in _detect_provider_status
+    "zai": "ZAI_API_KEY",
+    "minimax": "MINIMAX_API_KEY",
 }
 
 _PROVIDER_SIGNUP: dict[str, str] = {
@@ -280,6 +287,9 @@ _PROVIDER_SIGNUP: dict[str, str] = {
     "openai": "https://platform.openai.com/api-keys",
     "anthropic": "https://console.anthropic.com/settings/keys",
     "ollama": "https://ollama.com/download",
+    "litellm": "https://docs.litellm.ai/docs/proxy/proxy",
+    "zai": "https://open.bigmodel.cn/usercenter/apikeys",
+    "minimax": "https://platform.minimaxi.com/document/key%20management",
 }
 
 
@@ -409,6 +419,10 @@ def _detect_provider_status() -> dict[str, str]:
     for prov, env_var in _PROVIDER_ENV.items():
         if prov == "gemini":
             if os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY"):
+                status[prov] = env_var
+        elif prov == "litellm":
+            # litellm can be configured via API key (cloud) OR base URL (local proxy)
+            if os.environ.get("LITELLM_API_KEY") or os.environ.get("LITELLM_BASE_URL"):
                 status[prov] = env_var
         elif os.environ.get(env_var):
             status[prov] = env_var

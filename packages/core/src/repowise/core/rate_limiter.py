@@ -26,6 +26,10 @@ import random
 import time
 from dataclasses import dataclass
 
+import structlog
+
+log = structlog.get_logger(__name__)
+
 
 @dataclass(frozen=True)
 class RateLimitConfig:
@@ -34,10 +38,14 @@ class RateLimitConfig:
     Attributes:
         requests_per_minute: Maximum API requests within any 60-second window.
         tokens_per_minute:   Maximum tokens (input + output) within any 60-second window.
+        session_request_warn: If set, log a warning when cumulative session requests
+                              exceed this threshold. Useful for providers whose real
+                              limits span a longer window than our 60-second limiter.
     """
 
     requests_per_minute: int
     tokens_per_minute: int
+    session_request_warn: int | None = None
 
 
 # Default rate limit configs for known providers.
@@ -49,6 +57,17 @@ PROVIDER_DEFAULTS: dict[str, RateLimitConfig] = {
     # Ollama runs locally — effectively unlimited, but we cap to avoid OOM
     "ollama": RateLimitConfig(requests_per_minute=1_000, tokens_per_minute=10_000_000),
     "litellm": RateLimitConfig(requests_per_minute=60, tokens_per_minute=150_000),
+    "zai": RateLimitConfig(requests_per_minute=60, tokens_per_minute=150_000),
+    # MiniMax: published limits are 1500 requests / 5 hours. Our limiter uses a
+    # 60-second sliding window, so ~5 RPM is a steady-state approximation. Bursts
+    # may trigger local 429s, and slow paces may exceed real quota without tripping.
+    # session_request_warn fires once at ~73% of the 5-hour budget to alert the user.
+    # See: https://platform.minimaxi.com/document/rate-limit
+    "minimax": RateLimitConfig(
+        requests_per_minute=5,
+        tokens_per_minute=25_000,
+        session_request_warn=1100,
+    ),
 }
 
 
@@ -66,6 +85,9 @@ class RateLimiter:
         # (timestamp, token_count) pairs within the last 60 seconds
         self._token_records: list[tuple[float, int]] = []
         self._lock = asyncio.Lock()
+        # Cumulative session counter for long-window quota warnings
+        self._session_requests: int = 0
+        self._session_warned: bool = False
 
     async def acquire(self, estimated_tokens: int = 1_000) -> None:
         """Block until rate limits permit the next request.
@@ -89,6 +111,20 @@ class RateLimiter:
                 if rpm_ok and tpm_ok:
                     self._request_times.append(now)
                     self._token_records.append((now, estimated_tokens))
+                    self._session_requests += 1
+                    # Warn when approaching long-window provider quota
+                    if (
+                        self._config.session_request_warn
+                        and not self._session_warned
+                        and self._session_requests >= self._config.session_request_warn
+                    ):
+                        self._session_warned = True
+                        log.warning(
+                            "rate_limiter.session_quota_approaching",
+                            session_requests=self._session_requests,
+                            warn_threshold=self._config.session_request_warn,
+                            hint="Provider may 429 on sustained usage. Consider reducing concurrency or pausing.",
+                        )
                     return
 
                 # Compute how long to sleep before re-checking
